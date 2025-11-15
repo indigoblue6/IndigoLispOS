@@ -58,4 +58,13 @@ impl Env {
             self.define(name.clone(), value.clone());
         }
     }
+
+    // Get all binding names for tab completion
+    pub fn get_binding_names(&self) -> Vec<&str, MAX_BINDINGS> {
+        let mut names = Vec::new();
+        for (name, _) in self.bindings.iter() {
+            let _ = names.push(name.as_str());
+        }
+        names
+    }
 }
