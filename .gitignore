@@ -53,3 +53,22 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Rust build artifacts
+/target/
+/src-rust/target/
+Cargo.lock
+
+# Build directory
+build/
+*.elf
+
+# Binary outputs  
+kernel8.img
+*.img
+
+# MCP Server cache
+.serena/
+
+# Cargo metadata
+.cargo/
