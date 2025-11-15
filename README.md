@@ -110,6 +110,29 @@ make deploy SD_MOUNT=/media/user/boot
 
 起動後、UARTコンソールでS式を評価できます：
 
+### v0.2の例（Lambda、クロージャ）
+
+```lisp
+> (define factorial (lambda (n) (if (< n 2) 1 (* n (factorial (- n 1))))))
+<lambda>
+
+> (factorial 5)
+120
+
+> (define make-adder (lambda (n) (lambda (x) (+ x n))))
+<lambda>
+
+> (define add5 (make-adder 5))
+<lambda>
+
+> (add5 10)
+15
+
+; Note: Advanced macros require quasiquote/unquote (planned for v0.3)
+```
+
+### v0.1の例
+
 ```lisp
 > (+ 1 2 3)
 6
@@ -145,15 +168,32 @@ make deploy SD_MOUNT=/media/user/boot
 - [x] Panic Handler
 - [x] UART/GPIO/Timerドライバ
 
-### Phase 3: S式基盤 ✅
+### Phase 3: S式基盤 ✅ (v0.1)
 - [x] S式パーサ
 - [x] 評価器
 - [x] 基本的な組み込み関数 (+, -, *, /, =, <, >, list, car, cdr)
 - [x] 特殊形式 (define, if, quote, begin, set!)
 - [x] REPL
 
-### Phase 4: 今後の予定 🚧
-- [ ] Lambda関数の完全実装
+### Phase 4: 高階関数 ✅ (v0.2)
+- [x] **Lambda式** - 無名関数の定義
+- [x] **クロージャ** - 環境をキャプチャする関数
+- [x] **マクロ基盤** - defmacro構文（高度な機能はv0.3で実装予定）
+- [x] 高階関数のサポート
+- [x] レキシカルスコープ
+- [x] 再帰関数のサポート
+- [x] **高度なREPL機能**
+  - [x] タブ補完（80+キーワード）
+  - [x] コマンド履歴（↑↓キー、最大32履歴）
+  - [x] 複数行入力（括弧の自動バランス）
+  - [x] カーソル移動（←→キー）
+  - [x] Ctrl+A/E/K/U/C/D
+  - [x] 履歴永続化基盤
+
+### Phase 5: 今後の予定 🚧
+- [ ] Quasiquote/Unquote（マクロの完全サポート）
+- [ ] let/let* 構文
+- [ ] 文字列操作関数
 - [ ] タスク管理・協調マルチタスク
 - [ ] フレームバッファドライバ
 - [ ] USB対応

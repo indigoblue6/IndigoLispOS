@@ -128,7 +128,7 @@ impl Evaluator {
                     _ => Err("cdr requires a non-empty list"),
                 }
             }
-            _ => Err("Unknown built-in function: {}"),
+            _ => Err("Unknown built-in function"),
         }
     }
 
@@ -139,13 +139,13 @@ impl Evaluator {
 
     fn eval_expr(expr: &Expr, env: &mut Env) -> Result<Expr, &'static str> {
         match expr {
-            Expr::Number(_) | Expr::String(_) | Expr::Bool(_) | Expr::Nil => {
+            Expr::Number(_) | Expr::String(_) | Expr::Bool(_) | Expr::Nil | Expr::Lambda(..) | Expr::Macro(..) => {
                 Ok(expr.clone())
             }
 
             Expr::Symbol(name) => {
                 env.get(name)
-                    .ok_or_else(|| "Undefined symbol: {}")
+                    .ok_or_else(|| "Undefined symbol")
             }
 
             Expr::List(items) if items.is_empty() => Ok(Expr::Nil),
@@ -157,6 +157,8 @@ impl Evaluator {
                         Self::eval_quote(&items[1..])
                     } else if op.as_str() == "define" {
                         Self::eval_define(&items[1..], env)
+                    } else if op.as_str() == "defmacro" {
+                        Self::eval_defmacro(&items[1..], env)
                     } else if op.as_str() == "if" {
                         Self::eval_if(&items[1..], env)
                     } else if op.as_str() == "lambda" {
@@ -166,7 +168,13 @@ impl Evaluator {
                     } else if op.as_str() == "set!" {
                         Self::eval_set(&items[1..], env)
                     } else {
-                        Self::eval_application(items, env)
+                        // Check if it's a macro and expand it
+                        if let Some(Expr::Macro(..)) = env.get(op) {
+                            let expanded = Self::expand_macro(items, env)?;
+                            Self::eval_expr(&expanded, env)
+                        } else {
+                            Self::eval_application(items, env)
+                        }
                     }
                 } else {
                     Self::eval_application(items, env)
@@ -196,6 +204,43 @@ impl Evaluator {
         }
     }
 
+    fn eval_defmacro(args: &[Expr], env: &mut Env) -> Result<Expr, &'static str> {
+        if args.len() < 3 {
+            return Err("defmacro requires at least 3 arguments");
+        }
+
+        // (defmacro name (params...) body...)
+        if let Expr::Symbol(name) = &args[0] {
+            // Second arg is parameter list
+            let params = match &args[1] {
+                Expr::List(items) => {
+                    let mut params: heapless::Vec<heapless::String<64>, 4> = heapless::Vec::new();
+                    for item in items.iter() {
+                        if let Expr::Symbol(s) = item {
+                            let _ = params.push(s.clone());
+                        } else {
+                            return Err("macro parameters must be symbols");
+                        }
+                    }
+                    params
+                }
+                _ => return Err("defmacro requires parameter list"),
+            };
+
+            // Rest are body expressions
+            let mut body: heapless::Vec<Expr, 8> = heapless::Vec::new();
+            for expr in &args[2..] {
+                let _ = body.push(expr.clone());
+            }
+
+            let macro_value = Expr::Macro(Box::new((params, body)));
+            env.define(name.clone(), macro_value.clone());
+            Ok(macro_value)
+        } else {
+            Err("defmacro requires a symbol as first argument")
+        }
+    }
+
     fn eval_if(args: &[Expr], env: &mut Env) -> Result<Expr, &'static str> {
         if args.len() < 2 || args.len() > 3 {
             return Err("if requires 2 or 3 arguments");
@@ -211,9 +256,101 @@ impl Evaluator {
         }
     }
 
-    fn eval_lambda(_args: &[Expr], _env: &mut Env) -> Result<Expr, &'static str> {
-        // Simplified lambda - proper implementation would capture environment
-        Err("lambda not yet fully implemented")
+    fn eval_lambda(args: &[Expr], env: &mut Env) -> Result<Expr, &'static str> {
+        if args.len() < 2 {
+            return Err("lambda requires at least 2 arguments");
+        }
+
+        // First arg is parameter list
+        let params = match &args[0] {
+            Expr::List(items) => {
+                let mut params: heapless::Vec<heapless::String<64>, 4> = heapless::Vec::new();
+                for item in items.iter() {
+                    if let Expr::Symbol(s) = item {
+                        let _ = params.push(s.clone());
+                    } else {
+                        return Err("lambda parameters must be symbols");
+                    }
+                }
+                params
+            }
+            _ => return Err("lambda requires parameter list"),
+        };
+
+        // Rest are body expressions
+        let mut body: heapless::Vec<Expr, 8> = heapless::Vec::new();
+        for expr in &args[1..] {
+            let _ = body.push(expr.clone());
+        }
+
+        // Capture current environment
+        let env_snapshot = Some(env.snapshot());
+
+        Ok(Expr::Lambda(Box::new((params, body, env_snapshot))))
+    }
+
+    fn expand_macro(items: &[Expr], env: &mut Env) -> Result<Expr, &'static str> {
+        if let Expr::Symbol(name) = &items[0] {
+            if let Some(Expr::Macro(macro_data)) = env.get(name) {
+                let (params, body) = &*macro_data;
+                
+                // Bind arguments (unevaluated) to parameters
+                if items.len() - 1 != params.len() {
+                    return Err("macro argument count mismatch");
+                }
+
+                let mut macro_env = Env::new();
+                for (i, param) in params.iter().enumerate() {
+                    macro_env.define(param.clone(), items[i + 1].clone());
+                }
+
+                // Evaluate macro body with substituted arguments
+                let mut result = Expr::Nil;
+                for expr in body.iter() {
+                    result = Self::eval_expr(expr, &mut macro_env)?;
+                }
+                Ok(result)
+            } else {
+                Err("Not a macro")
+            }
+        } else {
+            Err("Macro name must be a symbol")
+        }
+    }
+
+    fn apply_lambda(
+        lambda_data: &(heapless::Vec<heapless::String<64>, 4>, heapless::Vec<Expr, 8>, Option<super::expr::EnvSnapshot>),
+        args: &[Expr],
+        current_env: &Env,
+    ) -> Result<Expr, &'static str> {
+        let (params, body, env_snapshot) = lambda_data;
+
+        if args.len() != params.len() {
+            return Err("lambda argument count mismatch");
+        }
+
+        // Create new environment: start with captured environment, 
+        // then extend with current global environment for recursive calls
+        let mut lambda_env = if let Some(snapshot) = env_snapshot {
+            Env::from_snapshot(snapshot)
+        } else {
+            Env::new()
+        };
+        
+        // Extend with current environment to support recursion
+        lambda_env.extend(&current_env.snapshot());
+
+        // Bind arguments to parameters (these override any captured values)
+        for (i, param) in params.iter().enumerate() {
+            lambda_env.define(param.clone(), args[i].clone());
+        }
+
+        // Evaluate body
+        let mut result = Expr::Nil;
+        for expr in body.iter() {
+            result = Self::eval_expr(expr, &mut lambda_env)?;
+        }
+        Ok(result)
     }
 
     fn eval_begin(args: &[Expr], env: &mut Env) -> Result<Expr, &'static str> {
@@ -242,18 +379,40 @@ impl Evaluator {
         }
     }
 
+    fn is_builtin(name: &str) -> bool {
+        matches!(name, "+" | "-" | "*" | "/" | "=" | "<" | ">" | "cons" | "list" | "car" | "cdr")
+    }
+
     fn eval_application(items: &[Expr], env: &mut Env) -> Result<Expr, &'static str> {
+        // Check if the operator is a symbol (builtin function name)
+        let operator = if let Expr::Symbol(name) = &items[0] {
+            // Check if it's a builtin function
+            if Self::is_builtin(name.as_str()) {
+                items[0].clone() // Don't evaluate builtin function names
+            } else {
+                // It's a user-defined function or lambda
+                Self::eval_expr(&items[0], env)?
+            }
+        } else {
+            // Evaluate the operator (e.g., lambda expression)
+            Self::eval_expr(&items[0], env)?
+        };
+
         // Evaluate arguments
         let mut args: heapless::Vec<Expr, 8> = heapless::Vec::new();
         for arg in &items[1..] {
             let _ = args.push(Self::eval_expr(arg, env)?);
         }
 
-        // Check if it's a built-in function
-        if let Expr::Symbol(name) = &items[0] {
-            Self::apply_builtin(name, &args)
-        } else {
-            Err("Not a function")
+        // Apply based on operator type
+        match operator {
+            Expr::Lambda(lambda_data) => {
+                Self::apply_lambda(&lambda_data, &args, env)
+            }
+            Expr::Symbol(name) => {
+                Self::apply_builtin(&name, &args)
+            }
+            _ => Err("Not a function")
         }
     }
 }

@@ -39,15 +39,38 @@
 (< 3 5)                 ; => true
 (> 3 5)                 ; => false
 
-; Complex example: Calculate factorial iteratively
-; Note: This would require lambda support (coming in Phase 4)
-; (define factorial
-;   (lambda (n)
-;     (if (< n 2)
-;         1
-;         (* n (factorial (- n 1))))))
+; ========================================
+; v0.2: Lambda, Closures, and Macros
+; ========================================
 
-; Define some constants
+; Lambda basics
+(define add (lambda (x y) (+ x y)))
+(add 3 4)               ; => 7
+
+; Lambda with single parameter
+(define square (lambda (x) (* x x)))
+(square 5)              ; => 25
+
+; Closure example - lambda captures environment
+(define make-adder (lambda (n) (lambda (x) (+ x n))))
+(define add5 (make-adder 5))
+(add5 10)               ; => 15
+
+; Factorial using lambda
+(define factorial
+  (lambda (n)
+    (if (< n 2)
+        1
+        (* n (factorial (- n 1))))))
+(factorial 5)           ; => 120
+
+; Note: Advanced macro examples require quasiquote/unquote
+; which are not yet implemented. Simple macros work:
+;
+; (defmacro unless (condition body else-body)
+;   (if condition else-body body))
+;
+; For now, focus on lambda and closures!
 (define pi 314159)      ; 3.14159 * 100000 (integer approximation)
 (define e 271828)       ; 2.71828 * 100000
 

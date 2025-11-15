@@ -1,7 +1,7 @@
 // env.rs - Environment for variable bindings
 
-use heapless::{String, FnvIndexMap};
-use super::expr::Expr;
+use heapless::{String, FnvIndexMap, Vec};
+use super::expr::{Expr, EnvSnapshot};
 
 const MAX_BINDINGS: usize = 32;
 const MAX_SYMBOL_LEN: usize = 64;
@@ -31,6 +31,31 @@ impl Env {
             Ok(())
         } else {
             Err("Undefined variable")
+        }
+    }
+
+    // Create a snapshot of current environment for closures
+    pub fn snapshot(&self) -> EnvSnapshot {
+        let mut bindings = Vec::new();
+        for (k, v) in self.bindings.iter() {
+            let _ = bindings.push((k.clone(), v.clone()));
+        }
+        EnvSnapshot { bindings }
+    }
+
+    // Create new environment from snapshot
+    pub fn from_snapshot(snapshot: &EnvSnapshot) -> Self {
+        let mut env = Env::new();
+        for (name, value) in &snapshot.bindings {
+            env.define(name.clone(), value.clone());
+        }
+        env
+    }
+
+    // Extend environment with new bindings
+    pub fn extend(&mut self, snapshot: &EnvSnapshot) {
+        for (name, value) in &snapshot.bindings {
+            self.define(name.clone(), value.clone());
         }
     }
 }

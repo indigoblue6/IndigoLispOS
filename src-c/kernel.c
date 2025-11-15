@@ -22,7 +22,7 @@ extern void mmu_init(void);
 void kernel_main(void) {
     // Initialize UART for debugging
     uart_init();
-    uart_puts("IndigoLispOS v0.1\n");
+    uart_puts("IndigoLispOS v0.2\n");
     uart_puts("Initializing...\n");
 
     // Initialize MMU (minimal setup)

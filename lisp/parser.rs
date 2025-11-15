@@ -21,26 +21,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse(&mut self) -> Result<Expr, String<MAX_ERROR_LEN>> {
-        // Debug output
-        unsafe {
-            let uart_base = 0x107d001000usize;
-            let uart_dr = (uart_base + 0x00) as *mut u32;
-            let msg = b"[PARSE] Entering parse()\n";
-            for &c in msg {
-                core::ptr::write_volatile(uart_dr, c as u32);
-            }
-        }
-        
         self.skip_whitespace();
-        
-        unsafe {
-            let uart_base = 0x107d001000usize;
-            let uart_dr = (uart_base + 0x00) as *mut u32;
-            let msg = b"[PARSE] After skip_whitespace\n";
-            for &c in msg {
-                core::ptr::write_volatile(uart_dr, c as u32);
-            }
-        }
         
         if self.pos >= self.input.len() {
             let mut err = String::new();
@@ -49,17 +30,6 @@ impl<'a> Parser<'a> {
         }
 
         let ch = self.current_char()?;
-        
-        unsafe {
-            let uart_base = 0x107d001000usize;
-            let uart_dr = (uart_base + 0x00) as *mut u32;
-            let msg = b"[PARSE] Got current char: ";
-            for &c in msg {
-                core::ptr::write_volatile(uart_dr, c as u32);
-            }
-            core::ptr::write_volatile(uart_dr, ch as u32);
-            core::ptr::write_volatile(uart_dr, b'\n' as u32);
-        }
         
         match ch {
             '(' => {
@@ -99,25 +69,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_list(&mut self) -> Result<Expr, String<MAX_ERROR_LEN>> {
-        unsafe {
-            let uart_base = 0x107d001000usize;
-            let uart_dr = (uart_base + 0x00) as *mut u32;
-            let msg = b"[PARSE] parse_list: creating Vec\n";
-            for &c in msg {
-                core::ptr::write_volatile(uart_dr, c as u32);
-            }
-        }
-        
         let mut items: Vec<Expr, 8> = Vec::new();
-        
-        unsafe {
-            let uart_base = 0x107d001000usize;
-            let uart_dr = (uart_base + 0x00) as *mut u32;
-            let msg = b"[PARSE] parse_list: Vec created\n";
-            for &c in msg {
-                core::ptr::write_volatile(uart_dr, c as u32);
-            }
-        }
 
         loop {
             self.skip_whitespace();
@@ -130,28 +82,7 @@ impl<'a> Parser<'a> {
 
             if self.current_char()? == ')' {
                 self.pos += 1;
-                
-                unsafe {
-                    let uart_base = 0x107d001000usize;
-                    let uart_dr = (uart_base + 0x00) as *mut u32;
-                    let msg = b"[PARSE] About to Box::new\n";
-                    for &c in msg {
-                        core::ptr::write_volatile(uart_dr, c as u32);
-                    }
-                }
-                
-                let boxed = Box::new(items);
-                
-                unsafe {
-                    let uart_base = 0x107d001000usize;
-                    let uart_dr = (uart_base + 0x00) as *mut u32;
-                    let msg = b"[PARSE] Box::new succeeded\n";
-                    for &c in msg {
-                        core::ptr::write_volatile(uart_dr, c as u32);
-                    }
-                }
-                
-                return Ok(Expr::List(boxed));
+                return Ok(Expr::List(Box::new(items)));
             }
 
             items.push(self.parse()?);

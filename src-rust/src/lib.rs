@@ -78,90 +78,116 @@ fn kernel_init() {
 fn kernel_main_loop() -> ! {
     drivers::uart::UART.puts("Entering main loop...\n");
     drivers::uart::UART.puts("IndigoLispOS is ready!\n");
-    drivers::uart::UART.puts("\nWelcome to IndigoLispOS REPL\n");
+    drivers::uart::UART.puts("\nWelcome to IndigoLispOS REPL v0.2\n");
+    drivers::uart::UART.puts("Features: Tab completion, Command history, Multi-line input\n");
     drivers::uart::UART.puts("Type S-expressions to evaluate\n\n");
 
-    // Create Lisp evaluator
-    drivers::uart::UART.puts("Creating evaluator...\n");
+    // Create Lisp evaluator and REPL editor
     let mut evaluator = lisp::Evaluator::new();
-    drivers::uart::UART.puts("Evaluator created\n");
-
+    let mut repl = lisp::ReplEditor::new();
+    
+    // Multi-line input buffer
+    let mut multi_line_buffer = heapless::String::<512>::new();
+    
     loop {
-        drivers::uart::UART.puts("> ");
+        // Determine prompt based on multi-line state
+        let prompt = if multi_line_buffer.is_empty() {
+            "> "
+        } else {
+            "... "
+        };
+        drivers::uart::UART.puts(prompt);
         
-        // Read a line of input with fixed buffer to avoid allocation issues
-        let mut buffer = [0u8; 256];
-        let mut len = 0;
+        // Read a line with advanced features
+        let line = repl.read_line(
+            || drivers::uart::UART.getc(),
+            &|c| drivers::uart::UART.putc(c)
+        );
         
-        loop {
-            let c = drivers::uart::UART.getc();
-            drivers::uart::UART.putc(c); // Echo
-            
-            if c == b'\r' || c == b'\n' {
-                drivers::uart::UART.puts("\n");
-                break;
-            } else if c == 0x7F || c == 0x08 { // Backspace
-                if len > 0 {
-                    len -= 1;
-                    drivers::uart::UART.puts("\x08 \x08");
-                }
-            } else if c >= 32 && c < 127 && len < 255 {
-                buffer[len] = c;
-                len += 1;
+        match line {
+            None => {
+                // Ctrl+C pressed
+                multi_line_buffer.clear();
+                continue;
             }
-        }
-
-        if len == 0 {
-            continue;
-        }
-
-        // Convert to string
-        let input = core::str::from_utf8(&buffer[..len]).unwrap_or("");
-        
-        // Parse and evaluate
-        let mut parser = lisp::Parser::new(input);
-        match parser.parse() {
-            Ok(expr) => {
-                match evaluator.eval(&expr) {
-                    Ok(result) => {
-                        // Simple output without allocation
-                        match result {
-                            lisp::Expr::Number(n) => {
-                                // Print number directly
-                                if n < 0 {
-                                    drivers::uart::UART.puts("-");
-                                    print_decimal((-n) as usize);
-                                } else {
-                                    print_decimal(n as usize);
+            Some(input) => {
+                // Append to multi-line buffer
+                if !multi_line_buffer.is_empty() {
+                    let _ = multi_line_buffer.push(' ');
+                }
+                let _ = multi_line_buffer.push_str(&input);
+                
+                // Check if input is complete
+                if !lisp::is_balanced(&multi_line_buffer) {
+                    // Continue reading
+                    continue;
+                }
+                
+                // Parse and evaluate
+                let input_str = multi_line_buffer.as_str();
+                let mut parser = lisp::Parser::new(input_str);
+                
+                match parser.parse() {
+                    Ok(expr) => {
+                        match evaluator.eval(&expr) {
+                            Ok(result) => {
+                                // Simple output without allocation
+                                match result {
+                                    lisp::Expr::Number(n) => {
+                                        if n < 0 {
+                                            drivers::uart::UART.puts("-");
+                                            print_decimal((-n) as usize);
+                                        } else {
+                                            print_decimal(n as usize);
+                                        }
+                                        drivers::uart::UART.puts("\n");
+                                    }
+                                    lisp::Expr::Bool(b) => {
+                                        if b {
+                                            drivers::uart::UART.puts("true\n");
+                                        } else {
+                                            drivers::uart::UART.puts("false\n");
+                                        }
+                                    }
+                                    lisp::Expr::Nil => {
+                                        drivers::uart::UART.puts("nil\n");
+                                    }
+                                    lisp::Expr::Lambda(..) => {
+                                        drivers::uart::UART.puts("<lambda>\n");
+                                    }
+                                    lisp::Expr::Macro(..) => {
+                                        drivers::uart::UART.puts("<macro>\n");
+                                    }
+                                    lisp::Expr::String(s) => {
+                                        drivers::uart::UART.puts("\"");
+                                        drivers::uart::UART.puts(&s);
+                                        drivers::uart::UART.puts("\"\n");
+                                    }
+                                    lisp::Expr::Symbol(s) => {
+                                        drivers::uart::UART.puts(&s);
+                                        drivers::uart::UART.puts("\n");
+                                    }
+                                    _ => {
+                                        drivers::uart::UART.puts("<result>\n");
+                                    }
                                 }
+                            }
+                            Err(e) => {
+                                drivers::uart::UART.puts("Error: ");
+                                drivers::uart::UART.puts(e);
                                 drivers::uart::UART.puts("\n");
-                            }
-                            lisp::Expr::Bool(b) => {
-                                if b {
-                                    drivers::uart::UART.puts("true\n");
-                                } else {
-                                    drivers::uart::UART.puts("false\n");
-                                }
-                            }
-                            lisp::Expr::Nil => {
-                                drivers::uart::UART.puts("nil\n");
-                            }
-                            _ => {
-                                drivers::uart::UART.puts("<result>\n");
                             }
                         }
                     }
                     Err(e) => {
-                        drivers::uart::UART.puts("Error: ");
-                        drivers::uart::UART.puts(e);
+                        drivers::uart::UART.puts("Parse error: ");
+                        drivers::uart::UART.puts(&e);
                         drivers::uart::UART.puts("\n");
                     }
                 }
-            }
-            Err(e) => {
-                drivers::uart::UART.puts("Parse error: ");
-                drivers::uart::UART.puts(&e);
-                drivers::uart::UART.puts("\n");
+                
+                // Clear multi-line buffer for next input
+                multi_line_buffer.clear();
             }
         }
     }
