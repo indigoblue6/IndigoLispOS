@@ -17,6 +17,11 @@ impl Evaluator {
         }
     }
 
+    // Get binding names from global environment for tab completion
+    pub fn get_binding_names(&self) -> heapless::Vec<&str, 32> {
+        self.global_env.get_binding_names()
+    }
+
     fn apply_builtin(name: &heapless::String<64>, args: &[Expr]) -> Result<Expr, &'static str> {
         match name.as_str() {
             "+" => {

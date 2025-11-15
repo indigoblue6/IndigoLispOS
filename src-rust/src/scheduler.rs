@@ -57,7 +57,7 @@ pub struct Task {
 
 impl Task {
     pub fn new(id: usize, entry: extern "C" fn(), name: &'static str) -> Self {
-        let mut stack = vec![0u8; TASK_STACK_SIZE].into_boxed_slice();
+        let stack = vec![0u8; TASK_STACK_SIZE].into_boxed_slice();
         let stack_top = stack.as_ptr() as usize + TASK_STACK_SIZE;
         
         let mut context = TaskContext::new();

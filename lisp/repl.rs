@@ -45,6 +45,8 @@ const KEYWORDS: &[&str] = &[
     "display", "newline", "write", "read", "print",
     // Common Lisp style
     "defun", "defvar", "defconst", "setq",
+    // Concurrency and timing
+    "spawn", "task-id", "sleep", "ticks",
     // Additional utilities
     "apply", "eval", "load", "exit", "help", "version",
 ];
@@ -68,7 +70,7 @@ impl ReplEditor {
         }
     }
 
-    pub fn read_line<F>(&mut self, uart_getc: F, uart_putc: &dyn Fn(u8)) -> Option<String<MAX_INPUT_LEN>>
+    pub fn read_line<F>(&mut self, uart_getc: F, uart_putc: &dyn Fn(u8), env_bindings: &[&str]) -> Option<String<MAX_INPUT_LEN>>
     where
         F: Fn() -> u8,
     {
@@ -104,7 +106,7 @@ impl ReplEditor {
                 }
                 b'\t' => {
                     // Tab completion
-                    self.handle_tab_completion(uart_putc);
+                    self.handle_tab_completion(uart_putc, env_bindings);
                 }
                 0x7f | 0x08 => {
                     // Backspace
@@ -256,7 +258,7 @@ impl ReplEditor {
         }
     }
 
-    fn handle_tab_completion(&mut self, uart_putc: &dyn Fn(u8)) {
+    fn handle_tab_completion(&mut self, uart_putc: &dyn Fn(u8), env_bindings: &[&str]) {
         // Find the current word
         let mut word_start = self.cursor_pos;
         while word_start > 0 {
@@ -273,13 +275,27 @@ impl ReplEditor {
 
         let word = &self.buffer[word_start..self.cursor_pos];
         
-        // Find matching keywords
-        let mut matches: Vec<&str, 16> = Vec::new();
+        // Find matching keywords and environment bindings
+        let mut matches: Vec<&str, 32> = Vec::new();
+        
+        // Search in keywords
         for keyword in KEYWORDS {
             if keyword.starts_with(word) {
                 let _ = matches.push(keyword);
                 if matches.is_full() {
                     break;
+                }
+            }
+        }
+        
+        // Search in environment bindings if there's still space
+        if !matches.is_full() {
+            for binding in env_bindings {
+                if binding.starts_with(word) && !matches.contains(binding) {
+                    let _ = matches.push(binding);
+                    if matches.is_full() {
+                        break;
+                    }
                 }
             }
         }

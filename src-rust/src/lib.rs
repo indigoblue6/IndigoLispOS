@@ -113,10 +113,15 @@ fn kernel_main_loop() -> ! {
         drivers::uart::UART.puts(prompt);
         
         // Read a line with advanced features
-        let line = repl.read_line(
-            || drivers::uart::UART.getc(),
-            &|c| drivers::uart::UART.putc(c)
-        );
+        let line = {
+            // Get current environment bindings for tab completion
+            let env_bindings = evaluator.get_binding_names();
+            repl.read_line(
+                || drivers::uart::UART.getc(),
+                &|c| drivers::uart::UART.putc(c),
+                &env_bindings
+            )
+        };
         
         match line {
             None => {
