@@ -19,9 +19,6 @@
 2. **Rustツールチェーン**
    - ターゲット: aarch64-unknown-none
 
-3. **QEMU**
-   - qemu-system-arm
-
 ## プロジェクト構成
 
 ```
@@ -35,11 +32,6 @@
 ```
 
 ## 次のステップ
-
-### QEMUでテスト (推奨)
-```bash
-make qemu
-```
 
 ### 実機デプロイ
 ```bash

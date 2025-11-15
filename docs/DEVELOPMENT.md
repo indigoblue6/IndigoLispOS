@@ -14,9 +14,6 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # AArch64ターゲットの追加
 rustup target add aarch64-unknown-none
-
-# QEMUのインストール (エミュレータ)
-sudo apt install -y qemu-system-arm
 ```
 
 ### 2. プロジェクトのビルド
@@ -27,15 +24,6 @@ make
 ```
 
 ビルドに成功すると `kernel8.img` が生成されます。
-
-### 3. QEMUでテスト
-
-```bash
-make qemu
-```
-
-注意: Raspberry Pi 5は比較的新しいハードウェアのため、QEMUでは `raspi3b` をエミュレートします。
-実機テストが推奨されます。
 
 ## コード構造の理解
 

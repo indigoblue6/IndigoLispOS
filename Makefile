@@ -31,7 +31,7 @@ RUST_LIB = $(RUST_DIR)/target/aarch64-unknown-none/release/libindigo_lisp_os.a
 ASM_OBJECTS = $(patsubst $(BOOT_DIR)/%.S,$(BUILD_DIR)/%.o,$(ASM_SOURCES))
 C_OBJECTS = $(patsubst $(SRC_C_DIR)/%.c,$(BUILD_DIR)/%.o,$(C_SOURCES))
 
-.PHONY: all clean rust qemu deploy
+.PHONY: all clean rust deploy
 
 all: $(KERNEL)
 
@@ -58,14 +58,6 @@ $(KERNEL): $(ELF)
 	$(OBJCOPY) -O binary $< $@
 	@echo "✓ Built $(KERNEL)"
 
-# Run in QEMU
-qemu: $(KERNEL)
-	qemu-system-aarch64 \
-		-M raspi3b \
-		-kernel $(KERNEL) \
-		-serial stdio \
-		-nographic
-
 # Deploy to SD card (adjust path as needed)
 deploy: $(KERNEL)
 	@echo "Deploying to SD card..."
@@ -89,7 +81,6 @@ help:
 	@echo "Targets:"
 	@echo "  all     - Build kernel8.img (default)"
 	@echo "  rust    - Build Rust components only"
-	@echo "  qemu    - Run in QEMU emulator"
 	@echo "  deploy  - Deploy to SD card (set SD_MOUNT=/path/to/sd)"
 	@echo "  clean   - Remove all build artifacts"
 	@echo "  help    - Show this help message"

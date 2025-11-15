@@ -79,9 +79,6 @@ sudo apt install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
 # Rustツールチェーン
 rustup target add aarch64-unknown-none
-
-# QEMU (テスト用)
-sudo apt install qemu-system-arm
 ```
 
 ### ビルド手順
@@ -98,12 +95,6 @@ make clean         # クリーンアップ
 ビルドが成功すると `kernel8.img` が生成されます。
 
 ## 実行
-
-### QEMUで実行
-
-```bash
-make qemu
-```
 
 ### 実機で実行
 

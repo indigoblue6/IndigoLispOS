@@ -160,7 +160,6 @@ enum Expr {
 
 - `all` (デフォルト) - kernel8.img をビルド
 - `rust` - Rust コンポーネントのみビルド
-- `qemu` - QEMU で実行
 - `deploy` - SD カードにデプロイ
 - `clean` - ビルド成果物を削除
 
@@ -197,7 +196,6 @@ kernel8.img
 
 - ペリフェラルのベースアドレスが Pi 4 から変更
 - 正確なアドレスマップは要検証
-- QEMUサポートなし (raspi3b でエミュレート)
 
 ## 将来の拡張
 
