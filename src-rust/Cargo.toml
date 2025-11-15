@@ -7,6 +7,8 @@ authors = ["IndigoLispOS Team"]
 [lib]
 crate-type = ["staticlib"]
 
+[build-dependencies]
+
 [profile.release]
 panic = "abort"
 lto = true
@@ -17,3 +19,4 @@ panic = "abort"
 
 [dependencies]
 heapless = "0.8"
+smoltcp = { version = "0.11", default-features = false, features = ["proto-ipv4", "socket-udp", "socket-tcp", "medium-ethernet"] }

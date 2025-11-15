@@ -18,6 +18,10 @@ RUST_DIR = src-rust
 CFLAGS = -Wall -O2 -ffreestanding -nostdinc -nostdlib -nostartfiles
 LDFLAGS = -nostdlib
 
+# Hot deploy config (can be overridden)
+RPI_IP ?= 192.168.10.110
+RPI_PORT ?= 8888
+
 # Output
 KERNEL = kernel8.img
 ELF = $(BUILD_DIR)/kernel8.elf
@@ -31,13 +35,14 @@ RUST_LIB = $(RUST_DIR)/target/aarch64-unknown-none/release/libindigo_lisp_os.a
 ASM_OBJECTS = $(BUILD_DIR)/boot.o $(BUILD_DIR)/interrupts.o
 C_OBJECTS = $(patsubst $(SRC_C_DIR)/%.c,$(BUILD_DIR)/%.o,$(C_SOURCES))
 
-.PHONY: all clean rust deploy
+.PHONY: all clean rust deploy hotdeploy watch-hotdeploy
 
 all: $(KERNEL)
 
 # Build Rust library
 rust:
-	cd $(RUST_DIR) && $(RUSTC) build --release --target aarch64-unknown-none
+	BUILD_TIMESTAMP="$$(date '+%Y-%m-%d %H:%M:%S')" && \
+	cd $(RUST_DIR) && BUILD_TIMESTAMP="$$BUILD_TIMESTAMP" $(RUSTC) build --release --target aarch64-unknown-none
 
 # Compile assembly from boot dir
 $(BUILD_DIR)/boot.o: $(BOOT_DIR)/boot.S
@@ -74,6 +79,15 @@ deploy: $(KERNEL)
 	sync
 	@echo "✓ Deployed to $(SD_MOUNT)"
 
+# Hot deploy over network
+hotdeploy: $(KERNEL)
+	@echo "Hot deploying kernel..."
+	@python3 tools/hotdeploy_send.py $(KERNEL) $(RPI_IP) $(RPI_PORT)
+
+# Watch for changes and auto hot-deploy
+watch-hotdeploy:
+	@./tools/watch_hotdeploy.sh
+
 # Clean build artifacts
 clean:
 	rm -rf $(BUILD_DIR) $(KERNEL)
@@ -84,8 +98,14 @@ help:
 	@echo "IndigoLispOS Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all     - Build kernel8.img (default)"
-	@echo "  rust    - Build Rust components only"
-	@echo "  deploy  - Deploy to SD card (set SD_MOUNT=/path/to/sd)"
-	@echo "  clean   - Remove all build artifacts"
-	@echo "  help    - Show this help message"
+	@echo "  all            - Build kernel8.img (default)"
+	@echo "  rust           - Build Rust components only"
+	@echo "  deploy         - Deploy to SD card (set SD_MOUNT=/path/to/sd)"
+	@echo "  hotdeploy      - Hot deploy over network (set RPI_IP=192.168.1.100)"
+	@echo "  watch-hotdeploy - Watch files and auto hot-deploy on changes"
+	@echo "  clean          - Remove all build artifacts"
+	@echo "  help           - Show this help message"
+	@echo ""
+	@echo "Hot Deploy Usage:"
+	@echo "  make hotdeploy RPI_IP=192.168.1.100 RPI_PORT=8888"
+	@echo "  make watch-hotdeploy"

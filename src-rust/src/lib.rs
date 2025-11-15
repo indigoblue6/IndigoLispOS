@@ -7,6 +7,8 @@ mod allocator;
 mod panic;
 mod interrupt;
 mod scheduler;
+mod network;
+mod hotdeploy;
 
 #[path = "../../drivers/mod.rs"]
 mod drivers;
@@ -68,6 +70,63 @@ fn kernel_init() {
     drivers::uart::UART.puts("GPIO ready\n");
     drivers::uart::UART.puts("Timer ready\n");
     
+    // Initialize PCIe
+    drivers::uart::UART.puts("Initializing PCIe...\n");
+    let mut rp1_initialized = false;
+    if let Err(e) = drivers::pcie::init_pcie() {
+        drivers::uart::UART.puts("PCIe init failed: ");
+        drivers::uart::UART.puts(e);
+        drivers::uart::UART.puts("\n");
+    } else {
+        drivers::uart::UART.puts("PCIe initialized\n");
+        
+        // Find and enable RP1
+        if let Some(pcie) = drivers::pcie::get_pcie() {
+            if let Some(mut rp1) = pcie.find_rp1() {
+                if let Err(e) = rp1.enable() {
+                    drivers::uart::UART.puts("RP1 enable failed: ");
+                    drivers::uart::UART.puts(e);
+                    drivers::uart::UART.puts("\n");
+                } else {
+                    // Initialize RP1 Ethernet
+                    drivers::uart::UART.puts("Initializing RP1 Ethernet...\n");
+                    let rp1_base = rp1.get_bar1_base();
+                    let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+                    if let Err(e) = drivers::rp1_ethernet::init_rp1_ethernet(rp1_base, mac) {
+                        drivers::uart::UART.puts("RP1 Ethernet init failed: ");
+                        drivers::uart::UART.puts(e);
+                        drivers::uart::UART.puts("\n");
+                    } else {
+                        drivers::uart::UART.puts("RP1 Ethernet initialized\n");
+                        rp1_initialized = true;
+                    }
+                }
+            } else {
+                drivers::uart::UART.puts("WARNING: RP1 not found - network disabled\n");
+            }
+        }
+    }
+    
+    // Initialize network stack only if RP1 is available
+    if rp1_initialized {
+        drivers::uart::UART.puts("Initializing network stack...\n");
+        use smoltcp::wire::Ipv4Address;
+        let ip = Ipv4Address::new(192, 168, 10, 110);
+        let gateway = Ipv4Address::new(192, 168, 10, 1);
+        network::init_network([0x02, 0x00, 0x00, 0x00, 0x00, 0x01], ip, gateway);
+        drivers::uart::UART.puts("Network stack ready (192.168.10.110)\n");
+        
+        // Initialize hot deploy receiver
+        drivers::uart::UART.puts("Initializing hot deploy...\n");
+        if let Ok(()) = hotdeploy::init_hotdeploy() {
+            drivers::uart::UART.puts("Hot deploy ready on port 8888\n");
+        } else {
+            drivers::uart::UART.puts("Hot deploy initialization failed\n");
+        }
+    } else {
+        drivers::uart::UART.puts("Network stack disabled (RP1 not available)\n");
+    }
+    
     // Test GPIO - blink LED on pin 21
     drivers::uart::UART.puts("Setting GPIO function...\n");
     drivers::gpio::GPIO.set_function(21, drivers::gpio::GpioFunction::Output);
@@ -91,6 +150,11 @@ fn kernel_init() {
 fn kernel_main_loop() -> ! {
     drivers::uart::UART.puts("Entering main loop...\n");
     drivers::uart::UART.puts("IndigoLispOS is ready!\n");
+    drivers::uart::UART.puts("\n");
+    
+    // Display build information
+    hotdeploy::print_build_info();
+    
     drivers::uart::UART.puts("\nWelcome to IndigoLispOS REPL v0.3\n");
     drivers::uart::UART.puts("Features: Interrupts, Task Scheduler, Lambda, Macros\n");
     drivers::uart::UART.puts("New: (spawn fn), (task-id), (sleep ms), (ticks)\n");
@@ -104,6 +168,13 @@ fn kernel_main_loop() -> ! {
     let mut multi_line_buffer = heapless::String::<512>::new();
     
     loop {
+        // Poll network stack and hot deploy continuously
+        let timestamp_ms = drivers::timer::TIMER.get_ticks();
+        if let Some(stack) = network::get_network_stack() {
+            stack.poll(timestamp_ms);
+        }
+        hotdeploy::poll_hotdeploy(timestamp_ms);
+        
         // Determine prompt based on multi-line state
         let prompt = if multi_line_buffer.is_empty() {
             "> "
@@ -112,12 +183,25 @@ fn kernel_main_loop() -> ! {
         };
         drivers::uart::UART.puts(prompt);
         
-        // Read a line with advanced features
+        // Read a line with advanced features (modified to poll network)
         let line = {
             // Get current environment bindings for tab completion
             let env_bindings = evaluator.get_binding_names();
             repl.read_line(
-                || drivers::uart::UART.getc(),
+                || {
+                    // Non-blocking getc with network polling
+                    loop {
+                        if let Some(c) = drivers::uart::UART.try_getc() {
+                            return c;
+                        }
+                        // Poll network while waiting for input
+                        let ts = drivers::timer::TIMER.get_ticks();
+                        if let Some(stack) = network::get_network_stack() {
+                            stack.poll(ts);
+                        }
+                        hotdeploy::poll_hotdeploy(ts);
+                    }
+                },
                 &|c| drivers::uart::UART.putc(c),
                 &env_bindings
             )
@@ -228,6 +312,10 @@ fn print_hex(n: usize) {
         let digit = ((n >> (i * 4)) & 0xF) as usize;
         uart_putc(HEX_CHARS[digit]);
     }
+}
+
+fn print_dec(n: usize) {
+    print_decimal(n);
 }
 
 fn print_decimal(mut n: usize) {

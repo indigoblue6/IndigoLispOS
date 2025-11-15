@@ -16,6 +16,7 @@ IndigoLispOSは、Raspberry Pi 5のベアメタル環境上で動作する極小
 - 🎨 **S式ネイティブ** - OS API を S式として直接操作
 - 🔧 **拡張可能** - Lispらしく動的にOSを拡張
 - 📚 **学習性** - 実装全体が理解しやすい構造
+- ⚡ **ホットデプロイ** - SDカード不要、ネットワーク経由で即座に更新
 
 ## アーキテクチャ
 
@@ -24,7 +25,10 @@ IndigoLispOSは、Raspberry Pi 5のベアメタル環境上で動作する極小
 │         S式 REPL / Evaluator        │
 │         (Rust - no_std)             │
 ├─────────────────────────────────────┤
-│    Drivers (UART/GPIO/Timer)        │
+│  Hot Deploy Receiver (UDP:8888)     │
+│  Network Stack (smoltcp)            │
+├─────────────────────────────────────┤
+│    Drivers (UART/GPIO/Timer/Net)    │
 │         (Rust - no_std)             │
 ├─────────────────────────────────────┤
 │    Kernel Runtime & Allocator       │
@@ -53,12 +57,15 @@ IndigoLispOS/
 │   │   ├── allocator.rs   # ヒープアロケータ
 │   │   ├── panic.rs       # パニックハンドラ
 │   │   ├── interrupt.rs   # 割込み管理 (v0.3)
-│   │   └── scheduler.rs   # タスクスケジューラ (v0.3)
+│   │   ├── scheduler.rs   # タスクスケジューラ (v0.3)
+│   │   ├── network.rs     # ネットワークスタック (smoltcp)
+│   │   └── hotdeploy.rs   # ホットデプロイ受信＆kexec
 │   └── Cargo.toml
 ├── drivers/           # デバイスドライバ (Rust)
 │   ├── uart.rs
 │   ├── gpio.rs
 │   ├── timer.rs       # 割込み対応 (v0.3)
+│   ├── ethernet.rs    # Ethernetドライバ
 │   └── mod.rs
 ├── lisp/              # S式評価器 (Rust)
 │   ├── expr.rs        # S式データ型
@@ -66,7 +73,11 @@ IndigoLispOS/
 │   ├── env.rs         # 環境・変数管理
 │   ├── eval.rs        # 評価器 (spawn, sleep等追加)
 │   ├── repl.rs        # REPL (v0.2)
+│   ├── hotreload.rs   # ホットリロード管理
 │   └── mod.rs
+├── tools/             # 開発ツール
+│   ├── hotdeploy_send.py    # カーネル送信スクリプト
+│   └── watch_hotdeploy.sh   # 自動監視＆デプロイ
 ├── arch/aarch64/      # アーキテクチャ依存
 │   ├── linker.ld      # リンカスクリプト
 │   └── interrupts.S   # 割込みベクタテーブル (v0.3)
@@ -100,7 +111,7 @@ make clean         # クリーンアップ
 
 ## 実行
 
-### 実機で実行
+### 実機で実行（従来のSDカード方式）
 
 1. SDカードのFATパーティションに `kernel8.img` をコピー
 2. Raspberry Pi 5に挿入して起動
@@ -109,6 +120,27 @@ make clean         # クリーンアップ
 # SD_MOUNT環境変数を設定して自動デプロイ
 make deploy SD_MOUNT=/media/user/boot
 ```
+
+### ホットデプロイ（推奨・開発時）
+
+ネットワーク経由でカーネルを即座に更新できます。SDカードの抜き差しは不要です。
+
+```bash
+# 1回だけデプロイ
+make hotdeploy RPI_IP=192.168.10.110
+
+# ファイル監視モード（自動ビルド＆デプロイ）
+make watch-hotdeploy
+```
+
+**開発サイクル:**
+1. コードを編集・保存
+2. 自動ビルド（5-10秒）
+3. 自動転送（0.5-2秒）
+4. Raspberry Pi自動リブート
+5. 新しいコードで即座に動作
+
+詳細は [docs/HOTDEPLOY.md](docs/HOTDEPLOY.md) を参照してください。
 
 ## REPL使用例
 
