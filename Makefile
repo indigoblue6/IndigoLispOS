@@ -23,12 +23,12 @@ KERNEL = kernel8.img
 ELF = $(BUILD_DIR)/kernel8.elf
 
 # Source files
-ASM_SOURCES = $(BOOT_DIR)/boot.S
+ASM_SOURCES = $(BOOT_DIR)/boot.S $(ARCH_DIR)/interrupts.S
 C_SOURCES = $(SRC_C_DIR)/kernel.c $(SRC_C_DIR)/uart.c $(SRC_C_DIR)/mmu.c
 RUST_LIB = $(RUST_DIR)/target/aarch64-unknown-none/release/libindigo_lisp_os.a
 
 # Object files
-ASM_OBJECTS = $(patsubst $(BOOT_DIR)/%.S,$(BUILD_DIR)/%.o,$(ASM_SOURCES))
+ASM_OBJECTS = $(BUILD_DIR)/boot.o $(BUILD_DIR)/interrupts.o
 C_OBJECTS = $(patsubst $(SRC_C_DIR)/%.c,$(BUILD_DIR)/%.o,$(C_SOURCES))
 
 .PHONY: all clean rust deploy
@@ -39,8 +39,13 @@ all: $(KERNEL)
 rust:
 	cd $(RUST_DIR) && $(RUSTC) build --release --target aarch64-unknown-none
 
-# Compile assembly
-$(BUILD_DIR)/%.o: $(BOOT_DIR)/%.S
+# Compile assembly from boot dir
+$(BUILD_DIR)/boot.o: $(BOOT_DIR)/boot.S
+	@mkdir -p $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Compile assembly from arch dir
+$(BUILD_DIR)/interrupts.o: $(ARCH_DIR)/interrupts.S
 	@mkdir -p $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 

@@ -128,6 +128,46 @@ impl Evaluator {
                     _ => Err("cdr requires a non-empty list"),
                 }
             }
+            "spawn" => {
+                // (spawn function-expr)
+                // Spawns a new task running the given function
+                if args.len() != 1 {
+                    return Err("spawn requires exactly 1 argument");
+                }
+                
+                // For now, return a task ID placeholder
+                // TODO: Implement actual task spawning with Lisp closure
+                Ok(Expr::Number(1))
+            }
+            "task-id" => {
+                // Return current task ID (always 0 for now)
+                Ok(Expr::Number(0))
+            }
+            "sleep" => {
+                // (sleep milliseconds)
+                if args.len() != 1 {
+                    return Err("sleep requires exactly 1 argument");
+                }
+                match &args[0] {
+                    Expr::Number(ms) => {
+                        use crate::drivers::timer;
+                        timer::TIMER.delay_ms(*ms as u32);
+                        Ok(Expr::Nil)
+                    }
+                    _ => Err("sleep requires a number"),
+                }
+            }
+            "ticks" => {
+                // Return system tick count
+                use crate::drivers::timer;
+                let ticks = timer::TIMER.get_ticks();
+                // Limit to i64::MAX to avoid overflow
+                if ticks > i64::MAX as u64 {
+                    Ok(Expr::Number(i64::MAX))
+                } else {
+                    Ok(Expr::Number(ticks as i64))
+                }
+            }
             _ => Err("Unknown built-in function"),
         }
     }
@@ -380,7 +420,11 @@ impl Evaluator {
     }
 
     fn is_builtin(name: &str) -> bool {
-        matches!(name, "+" | "-" | "*" | "/" | "=" | "<" | ">" | "cons" | "list" | "car" | "cdr")
+        matches!(name, 
+            "+" | "-" | "*" | "/" | "=" | "<" | ">" | 
+            "cons" | "list" | "car" | "cdr" | 
+            "spawn" | "task-id" | "sleep" | "ticks"
+        )
     }
 
     fn eval_application(items: &[Expr], env: &mut Env) -> Result<Expr, &'static str> {

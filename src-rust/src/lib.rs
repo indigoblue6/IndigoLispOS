@@ -5,6 +5,8 @@ extern crate alloc;
 
 mod allocator;
 mod panic;
+mod interrupt;
+mod scheduler;
 
 #[path = "../../drivers/mod.rs"]
 mod drivers;
@@ -52,6 +54,17 @@ pub extern "C" fn rust_entry(heap_start: *mut u8, heap_end: *mut u8) -> ! {
 
 fn kernel_init() {
     drivers::uart::UART.puts("Initializing kernel subsystems...\n");
+    
+    // Initialize interrupt system
+    drivers::uart::UART.puts("Initializing interrupts...\n");
+    interrupt::init();
+    drivers::uart::UART.puts("Interrupts enabled\n");
+    
+    // Initialize timer interrupt
+    drivers::uart::UART.puts("Initializing timer interrupt...\n");
+    drivers::timer::TIMER.init_interrupt();
+    drivers::uart::UART.puts("Timer interrupt ready\n");
+    
     drivers::uart::UART.puts("GPIO ready\n");
     drivers::uart::UART.puts("Timer ready\n");
     
@@ -78,8 +91,9 @@ fn kernel_init() {
 fn kernel_main_loop() -> ! {
     drivers::uart::UART.puts("Entering main loop...\n");
     drivers::uart::UART.puts("IndigoLispOS is ready!\n");
-    drivers::uart::UART.puts("\nWelcome to IndigoLispOS REPL v0.2\n");
-    drivers::uart::UART.puts("Features: Tab completion, Command history, Multi-line input\n");
+    drivers::uart::UART.puts("\nWelcome to IndigoLispOS REPL v0.3\n");
+    drivers::uart::UART.puts("Features: Interrupts, Task Scheduler, Lambda, Macros\n");
+    drivers::uart::UART.puts("New: (spawn fn), (task-id), (sleep ms), (ticks)\n");
     drivers::uart::UART.puts("Type S-expressions to evaluate\n\n");
 
     // Create Lisp evaluator and REPL editor

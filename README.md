@@ -49,23 +49,27 @@ IndigoLispOS/
 │   └── mmu.c          # MMU設定
 ├── src-rust/          # Rustカーネル本体
 │   ├── src/
-│   │   ├── lib.rs     # メインエントリ
-│   │   ├── allocator.rs
-│   │   └── panic.rs
+│   │   ├── lib.rs         # メインエントリ
+│   │   ├── allocator.rs   # ヒープアロケータ
+│   │   ├── panic.rs       # パニックハンドラ
+│   │   ├── interrupt.rs   # 割込み管理 (v0.3)
+│   │   └── scheduler.rs   # タスクスケジューラ (v0.3)
 │   └── Cargo.toml
 ├── drivers/           # デバイスドライバ (Rust)
 │   ├── uart.rs
 │   ├── gpio.rs
-│   ├── timer.rs
+│   ├── timer.rs       # 割込み対応 (v0.3)
 │   └── mod.rs
 ├── lisp/              # S式評価器 (Rust)
 │   ├── expr.rs        # S式データ型
 │   ├── parser.rs      # パーサ
 │   ├── env.rs         # 環境・変数管理
-│   ├── eval.rs        # 評価器
+│   ├── eval.rs        # 評価器 (spawn, sleep等追加)
+│   ├── repl.rs        # REPL (v0.2)
 │   └── mod.rs
 ├── arch/aarch64/      # アーキテクチャ依存
-│   └── linker.ld      # リンカスクリプト
+│   ├── linker.ld      # リンカスクリプト
+│   └── interrupts.S   # 割込みベクタテーブル (v0.3)
 └── Makefile           # ビルドシステム
 ```
 
@@ -190,7 +194,29 @@ make deploy SD_MOUNT=/media/user/boot
   - [x] Ctrl+A/E/K/U/C/D
   - [x] 履歴永続化基盤
 
-### Phase 5: 今後の予定 🚧
+### Phase 5: 割込みとスケジューラ ✅ (v0.3)
+- [x] **割込み処理**
+  - [x] 例外ベクタテーブル (AArch64)
+  - [x] IRQハンドラ
+  - [x] コンテキスト保存・復元
+- [x] **タイマー割込み**
+  - [x] 10ms周期の定期割込み
+  - [x] Tickカウンタ
+- [x] **タスクスケジューラ基盤**
+  - [x] タスク制御ブロック (TCB)
+  - [x] コンテキストスイッチ
+  - [x] ラウンドロビンスケジューラ
+- [x] **Lisp API拡張**
+  - [x] `(spawn fn)` - タスク生成（基盤）
+  - [x] `(task-id)` - タスクID取得
+  - [x] `(sleep ms)` - スリープ
+  - [x] `(ticks)` - システムティック取得
+
+### Phase 6: 今後の予定 🚧
+- [ ] 完全なマルチタスク（自動タスク切り替え）
+- [ ] タスク間通信（メッセージパッシング）
+- [ ] 同期プリミティブ（ミューテックス、セマフォ）
+- [ ] Lispクロージャのタスク化
 - [ ] Quasiquote/Unquote（マクロの完全サポート）
 - [ ] let/let* 構文
 - [ ] 文字列操作関数
@@ -199,21 +225,25 @@ make deploy SD_MOUNT=/media/user/boot
 - [ ] USB対応
 - [ ] ファイルシステム
 
-## OS API (予定)
+## OS API (実装中/予定)
 
 ```lisp
 ; システム操作
-(os/print "Hello, World!")
-(os/time)
+(ticks)              ; システムティック数取得 (v0.3) ✅
+(sleep 1000)         ; ミリ秒スリープ (v0.3) ✅
+
+; タスク管理
+(spawn fn)           ; タスク生成 (v0.3 基盤) ✅
+(task-id)            ; 現在のタスクID (v0.3) ✅
+
+; 予定
+(os/print "Hello")   ; システム出力
+(os/time)            ; 時刻取得
 
 ; GPIO操作
 (os/gpio-mode 21 'output)
 (os/gpio-write 21 1)
 (os/gpio-read 21)
-
-; タスク管理
-(task/spawn (lambda () (print "New task!")))
-(task/sleep 1000)
 
 ; メモリ管理
 (memory/alloc 1024)
