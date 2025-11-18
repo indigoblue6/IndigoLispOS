@@ -37,10 +37,16 @@ impl Gpio {
             return;
         }
 
-        // For now, skip GPIO operations to avoid potential hangs
-        // TODO: Implement proper RP1 GPIO access
-        // let reg_offset = (pin / 10) as isize;
-        // let bit_offset = (pin % 10) * 3;
+        let reg_offset = (pin / 10) as isize; // 10 pins per GPFSEL register
+        let bit_offset = (pin % 10) * 3;
+        unsafe {
+            let reg_ptr = GPFSEL0.offset(reg_offset);
+            let mut val = ptr::read_volatile(reg_ptr);
+            // clear current 3 bits
+            val &= !(0b111 << bit_offset);
+            val |= ( (_function as u32) << bit_offset);
+            ptr::write_volatile(reg_ptr, val);
+        }
     }
 
     /// Set GPIO pin high
@@ -48,9 +54,11 @@ impl Gpio {
         if pin > 53 {
             return;
         }
-
-        // Skip for now to avoid hangs
-        // TODO: Implement proper RP1 GPIO access
+        let reg_offset = (pin / 32) as isize;
+        let bit = pin % 32;
+        unsafe {
+            ptr::write_volatile(GPSET0.offset(reg_offset), 1u32 << bit);
+        }
     }
 
     /// Set GPIO pin low
@@ -58,9 +66,11 @@ impl Gpio {
         if pin > 53 {
             return;
         }
-
-        // Skip for now to avoid hangs
-        // TODO: Implement proper RP1 GPIO access
+        let reg_offset = (pin / 32) as isize;
+        let bit = pin % 32;
+        unsafe {
+            ptr::write_volatile(GPCLR0.offset(reg_offset), 1u32 << bit);
+        }
     }
 
     /// Write value to GPIO pin

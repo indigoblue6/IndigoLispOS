@@ -44,6 +44,33 @@ void uart_puts(const char* str) {
     }
 }
 
+// Helper: print a 4-bit nibble as hex
+static void uart_puthex_nibble(unsigned int v) {
+    unsigned int nib = v & 0xF;
+    if (nib < 10) uart_putc('0' + nib);
+    else uart_putc('a' + (nib - 10));
+}
+
+// Print 32-bit value as 0xhhhhhhhh
+void uart_puthex32(unsigned int v) {
+    uart_puts("0x");
+    for (int i = 7; i >= 0; --i) {
+        unsigned int shift = i * 4;
+        uart_puthex_nibble((v >> shift) & 0xF);
+    }
+}
+
+// Print 64-bit value as 0xhhhhhhhhhhhhhhhh
+void uart_puthex64(unsigned long v) {
+    uart_puts("0x");
+    for (int i = 15; i >= 0; --i) {
+        unsigned long shift = (unsigned long)i * 4UL;
+        unsigned int nib = (unsigned int)((v >> shift) & 0xFUL);
+        if (nib < 10) uart_putc('0' + nib);
+        else uart_putc('a' + (nib - 10));
+    }
+}
+
 char uart_getc(void) {
     // Wait until RX FIFO is not empty
     while (*UART0_FR & UART_FR_RXFE);

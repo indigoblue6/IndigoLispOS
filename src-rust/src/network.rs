@@ -10,6 +10,8 @@ use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address};
 
 const MTU: usize = 1500;
+const LOCAL_MAC: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
+const LOCAL_IP: [u8; 4] = [192, 168, 10, 110];
 
 /// Wrapper for Ethernet driver to implement smoltcp Device trait
 pub struct NetworkDevice;
@@ -38,6 +40,7 @@ impl Device for NetworkDevice {
                     crate::print_str("\n");
                     
                     let rx_buffer = buffer[..len].to_vec();
+                    handle_basic_packets(&rx_buffer);
                     return Some((
                         RxTokenImpl { buffer: rx_buffer },
                         TxTokenImpl,
@@ -202,4 +205,119 @@ pub fn init_network(mac: [u8; 6], ip: Ipv4Address, gateway: Ipv4Address) {
 
 pub fn get_network_stack() -> Option<&'static mut NetworkStack> {
     unsafe { NETWORK_STACK.as_mut() }
+}
+
+fn handle_basic_packets(frame: &[u8]) {
+    if frame.len() < 14 {
+        return;
+    }
+    let ethertype = u16::from_be_bytes([frame[12], frame[13]]);
+    match ethertype {
+        0x0806 => handle_arp(frame),
+        0x0800 => handle_ipv4(frame),
+        _ => {}
+    }
+}
+
+fn handle_arp(frame: &[u8]) {
+    if frame.len() < 42 {
+        return;
+    }
+    let op = u16::from_be_bytes([frame[20], frame[21]]);
+    if op != 1 {
+        return;
+    }
+    let target_ip = &frame[38..42];
+    if target_ip != LOCAL_IP {
+        return;
+    }
+
+    crate::print_str("[NET] ARP request for us\n");
+
+    let mut reply = [0u8; 42];
+    reply[0..6].copy_from_slice(&frame[6..12]);
+    reply[6..12].copy_from_slice(&LOCAL_MAC);
+    reply[12..14].copy_from_slice(&frame[12..14]);
+    reply[14..18].copy_from_slice(&frame[14..18]);
+    reply[18] = frame[18];
+    reply[19] = frame[19];
+    reply[20..22].copy_from_slice(&2u16.to_be_bytes());
+    reply[22..28].copy_from_slice(&LOCAL_MAC);
+    reply[28..32].copy_from_slice(&LOCAL_IP);
+    reply[32..38].copy_from_slice(&frame[22..28]);
+    reply[38..42].copy_from_slice(&frame[28..32]);
+
+    send_frame(&reply);
+}
+
+fn handle_ipv4(frame: &[u8]) {
+    if frame.len() < 34 {
+        return;
+    }
+    let ihl = (frame[14] & 0x0F) as usize * 4;
+    if frame.len() < 14 + ihl {
+        return;
+    }
+    let dst_ip = &frame[30..34];
+    if dst_ip != LOCAL_IP {
+        return;
+    }
+    let protocol = frame[23];
+    if protocol != 1 {
+        return;
+    }
+    if frame.len() < 14 + ihl + 8 {
+        return;
+    }
+    let icmp_offset = 14 + ihl;
+    let icmp_len = frame.len() - icmp_offset;
+    let icmp = &frame[icmp_offset..];
+    if icmp[0] != 8 {
+        return;
+    }
+
+    crate::print_str("[NET] ICMP echo request\n");
+
+    let mut reply = frame.to_vec();
+    reply[0..6].copy_from_slice(&frame[6..12]);
+    reply[6..12].copy_from_slice(&LOCAL_MAC);
+    reply[30..34].copy_from_slice(&frame[26..30]);
+    reply[26..30].copy_from_slice(&LOCAL_IP);
+    reply[20] = 0;
+    reply[21] = 0;
+    let hdr = &mut reply[14..14 + ihl];
+    let checksum = ipv4_checksum(hdr);
+    hdr[10] = (checksum >> 8) as u8;
+    hdr[11] = checksum as u8;
+
+    reply[icmp_offset] = 0;
+    reply[icmp_offset + 1] = 0;
+    reply[icmp_offset + 2] = 0;
+    reply[icmp_offset + 3] = 0;
+    let icmp_checksum = ipv4_checksum(&reply[icmp_offset..icmp_offset + icmp_len]);
+    reply[icmp_offset + 2] = (icmp_checksum >> 8) as u8;
+    reply[icmp_offset + 3] = icmp_checksum as u8;
+
+    send_frame(&reply);
+}
+
+fn ipv4_checksum(data: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+    let mut chunks = data.chunks_exact(2);
+    for chunk in &mut chunks {
+        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+    }
+    if let Some(&last) = chunks.remainder().first() {
+        sum += (last as u32) << 8;
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+fn send_frame(data: &[u8]) {
+    if let Some(eth) = crate::drivers::rp1_ethernet::get_rp1_ethernet() {
+        let _ = eth.send(data);
+    }
 }

@@ -1,0 +1,474 @@
+// mailbox.rs - BCM Mailbox + property tags helper
+//
+// This module implements the classic ARM <-> VideoCore mailbox interface
+// used for property tag requests.  RP1 still relies on this interface
+// for board/clock/power queries even on Raspberry Pi 5.
+
+use core::ptr;
+use core::sync::atomic::{compiler_fence, Ordering, AtomicBool, AtomicU64, AtomicU32};
+
+use crate::drivers::pcie::{
+    RP1_BAR1_CPU_BASE,
+    RP1_ETH_OFFSET,
+    RP1_BAR0_CPU_BASE,
+    RP1_OUTBOUND_CPU_BASE,
+    RP1_BAR1_PCIE_BASE,
+};
+use crate::drivers::timer::TIMER;
+
+// Runtime mailbox registration (filled once during probe/initialization)
+// Store CPU-visible base and PCIe bus address so subsequent lookups/prints
+// use a stable value instead of recomputing from possibly uninitialized
+// globals at awkward times. Use atomic types to avoid accidental address
+// vs value confusion and to allow safe reads from other contexts.
+static MAILBOX_REGISTERED: AtomicBool = AtomicBool::new(false);
+static MAILBOX_CPU_BASE: AtomicU64 = AtomicU64::new(0);
+static MAILBOX_BUS_ADDR: AtomicU32 = AtomicU32::new(0);
+
+// The RP1 firmware mailbox is located inside RP1's internal AXI space.
+// On Raspberry Pi 5 this is reachable via the PCIe outbound window (WIN0).
+// Calculate mailbox base as: CPU(RP1_OUTBOUND_CPU_BASE + (BAR0 - RP1_BAR1_PCIE_BASE)) + 0x4000
+// ※ 実際の計算は lazy init でやる。
+// For compatibility: old BAR1/ETH-based path
+const MAILBOX_REG_IN_ETH_BLOCK: usize = 0x0000_B880;
+const MAILBOX_OFFSET: usize = MAILBOX_REG_IN_ETH_BLOCK;
+
+// The RP1 firmware RPC mailbox exposed for firmware commands is located at
+// PCIe BAR0 + 0x4000 according to Linux `drivers/firmware/raspberrypi/rp1-ctrl.c`.
+const FW_MAILBOX_OFFSET: usize = 0x4000;
+
+fn mailbox_base() -> usize {
+    // 登録済みならそれだけを見る。未登録時は 0 を返すだけで、ここでは panic しない。
+    if MAILBOX_REGISTERED.load(Ordering::Acquire) {
+        MAILBOX_CPU_BASE.load(Ordering::SeqCst) as usize
+    } else {
+        0
+    }
+}
+
+fn mailbox_read_addr() -> usize { mailbox_base() + 0x00 }
+fn mailbox_status_addr() -> usize { mailbox_base() + 0x18 }
+fn mailbox_write_addr() -> usize { mailbox_base() + 0x20 }
+
+const MAILBOX_STATUS_EMPTY: u32 = 1 << 30;
+const MAILBOX_STATUS_FULL: u32 = 1 << 31;
+
+const MAILBOX_PROPERTY_CHANNEL: u32 = 8;
+const MAILBOX_TIMEOUT: usize = 1_000_000;
+
+const PROPERTY_REQUEST: u32 = 0;
+const PROPERTY_RESPONSE: u32 = 0x8000_0000;
+const PROPERTY_END_TAG: u32 = 0;
+
+const VC_BUS_ADDR_OFFSET: usize = 0xC0_00_0000;
+
+/// Property tag IDs (subset used by the current firmware).
+pub mod tag {
+    pub const GET_CLOCK_RATE: u32 = 0x0003_0002;
+    pub const GET_CLOCK_RATE_MEASURED: u32 = 0x0003_0047;
+    pub const SET_CLOCK_STATE: u32 = 0x0003_8001;
+    pub const SET_CLOCK_RATE: u32 = 0x0003_8002;
+    pub const SET_POWER_STATE: u32 = 0x0002_8001;
+    pub const GET_POWER_STATE: u32 = 0x0002_0001;
+}
+
+/// Clock identifiers understood by the firmware.
+#[repr(u32)]
+#[derive(Copy, Clone)]
+pub enum ClockId {
+    Arm = 3,
+    Core = 4,
+    Emmc = 1,
+    Emmc2 = 12,
+    Uart = 2,
+}
+
+impl ClockId {
+    pub const fn as_raw(self) -> u32 {
+        self as u32
+    }
+}
+
+/// Device identifiers for PROPTAG_SET_POWER_STATE.
+#[repr(u32)]
+#[derive(Copy, Clone)]
+pub enum DeviceId {
+    SdCard = 0,
+    Uart0 = 1,
+    Uart1 = 2,
+    UsbHcd = 3,
+}
+
+impl DeviceId {
+    pub const fn as_raw(self) -> u32 {
+        self as u32
+    }
+}
+
+/// Power-state bit masks.
+pub mod power_state {
+    pub const ON: u32 = 1 << 0;
+    pub const WAIT: u32 = 1 << 1;
+    pub const NO_DEVICE: u32 = 1 << 1; // response bit
+}
+
+/// Clock state bit masks (same format as power_state).
+pub mod clock_state {
+    pub const ENABLE: u32 = 1 << 0;
+}
+
+#[derive(Debug)]
+pub enum MailboxError {
+    Alignment,
+    BufferTooSmall,
+    Timeout,
+    ResponseError,
+}
+
+///
+/// Lazy init: BAR0 が入ったあと、まだ MAILBOX_REGISTERED=false なら
+///   CPU 側 mailbox base / bus 側 mailbox base をここで計算して登録する。
+///
+fn ensure_mailbox_initialized_from_bar0() -> Result<(), MailboxError> {
+    if MAILBOX_REGISTERED.load(Ordering::Acquire) {
+        return Ok(());
+    }
+
+    let bar0_raw = RP1_BAR0_CPU_BASE.load(Ordering::SeqCst);
+    if bar0_raw == 0 {
+        crate::print_str("MAILBOX: ensure_mailbox_initialized_from_bar0 called but BAR0==0\n");
+        return Err(MailboxError::ResponseError);
+    }
+
+    // BAR0 の config レジスタ値相当（下位 4bit はフラグ）
+    let bar0_pcie = (bar0_raw & 0xFFFF_FFF0) as u64;
+
+    // Outbound window:
+    //   CPU  0x6000_0000_00 .. +size
+    //   PCIe 0xC000_0000   .. +size
+    //
+    // BAR0 = 0xC040_0000 → window 内での offset は (0xC040_0000 - 0xC000_0000) = 0x0040_0000
+    // CPU 側 base = 0x6000_0000_00 + 0x0040_0000 = 0x6000_4000_00
+    let cpu_for_bar0 = RP1_OUTBOUND_CPU_BASE + (bar0_pcie - RP1_BAR1_PCIE_BASE);
+    let cpu_mailbox = (cpu_for_bar0 as usize) + FW_MAILBOX_OFFSET;
+    let bus_mailbox = (bar0_pcie as usize) + FW_MAILBOX_OFFSET;
+
+    MAILBOX_CPU_BASE.store(cpu_mailbox as u64, Ordering::SeqCst);
+    MAILBOX_BUS_ADDR.store(bus_mailbox as u32, Ordering::SeqCst);
+    MAILBOX_REGISTERED.store(true, Ordering::Release);
+
+    crate::print_str("MAILBOX: lazy init from BAR0\n");
+    debug_dump_runtime_base();
+
+    Ok(())
+}
+
+/// Perform a raw property request. `buffer` must be 16-byte aligned and
+/// contain the standard property message header/footer.  The function
+/// fills in the firmware response in-place.
+pub fn property_call(buffer: &mut [u32]) -> Result<(), MailboxError> {
+    if buffer.len() < 3 {
+        return Err(MailboxError::BufferTooSmall);
+    }
+    let addr = buffer.as_ptr() as usize;
+    if (addr & 0xF) != 0 {
+        return Err(MailboxError::Alignment);
+    }
+
+    // Ensure the request code is set to REQUEST (bit31=0)
+    buffer[1] = PROPERTY_REQUEST;
+    // Firmware expects a terminating 0 tag
+    if let Some(last) = buffer.last_mut() {
+        *last = PROPERTY_END_TAG;
+    }
+
+    compiler_fence(Ordering::SeqCst);
+
+    let bus_addr = arm_to_vc(addr);
+
+    // Wait for BAR0 to be programmed by the PCIe code. property_call is
+    // meaningless until BAR0 is available, so wait a reasonable time and
+    // return an error if it never appears.
+    let mut waited = 0usize;
+    while RP1_BAR0_CPU_BASE.load(Ordering::Acquire) == 0 {
+        if waited >= 1000 {
+            crate::print_str("MAILBOX: ERROR - RP1 BAR0 not programmed (timeout)\n");
+            return Err(MailboxError::ResponseError);
+        }
+        TIMER.delay_ms(1);
+        waited += 1;
+    }
+
+    // BAR0 が入ったので、まだ未登録ならここで mailbox base を決定する
+    ensure_mailbox_initialized_from_bar0()?;
+
+    // Debug: print computed mailbox base and bus address (VC bus addr for buffer)。
+    let stored_cpu = MAILBOX_CPU_BASE.load(Ordering::SeqCst) as usize;
+    let stored_bus = MAILBOX_BUS_ADDR.load(Ordering::SeqCst) as usize;
+
+    crate::print_str("MAILBOX_BASE=");
+    crate::print_hex(stored_cpu);
+    crate::print_str(" bus_addr=");
+    crate::print_hex(if stored_bus != 0 { stored_bus } else { bus_addr });
+    crate::print_str("\n");
+
+    mailbox_write(MAILBOX_PROPERTY_CHANNEL, bus_addr as u32)?;
+    let resp = mailbox_read(MAILBOX_PROPERTY_CHANNEL)?;
+
+    if resp != (bus_addr as u32) {
+        return Err(MailboxError::ResponseError);
+    }
+
+    compiler_fence(Ordering::SeqCst);
+
+    if (buffer[1] & PROPERTY_RESPONSE) == 0 {
+        return Err(MailboxError::ResponseError);
+    }
+
+    Ok(())
+}
+
+/// Helper that retrieves a clock rate (in Hz) via property tags.
+pub fn get_clock_rate(clock: ClockId) -> Result<u32, MailboxError> {
+    #[repr(align(16))]
+    struct PropertyBuf([u32; 8]);
+
+    let mut buf = PropertyBuf([0; 8]);
+    let data = &mut buf.0;
+
+    let byte_size = (data.len() * core::mem::size_of::<u32>()) as u32;
+    data[0] = byte_size;
+    data[1] = PROPERTY_REQUEST;
+    data[2] = tag::GET_CLOCK_RATE;
+    data[3] = 8; // value buffer size
+    data[4] = 4; // request size (clock_id)
+    data[5] = clock as u32;
+    data[6] = 0; // placeholder for rate
+    data[7] = PROPERTY_END_TAG;
+
+    property_call(data)?;
+
+    if (data[4] & PROPERTY_RESPONSE) == 0 {
+        return Err(MailboxError::ResponseError);
+    }
+
+    Ok(data[6])
+}
+
+/// Set clock enable/disable state for the given clock ID.
+pub fn set_clock_state(clock: ClockId, enable: bool) -> Result<u32, MailboxError> {
+    #[repr(align(16))]
+    struct PropertyBuf([u32; 8]);
+    let mut buf = PropertyBuf([0; 8]);
+    let data = &mut buf.0;
+
+    data[0] = (data.len() * core::mem::size_of::<u32>()) as u32;
+    data[2] = tag::SET_CLOCK_STATE;
+    data[3] = 8;
+    data[4] = 8;
+    data[5] = clock.as_raw();
+    data[6] = if enable { clock_state::ENABLE } else { 0 };
+
+    property_call(data)?;
+    Ok(data[6])
+}
+
+/// Set clock frequency (Hz) for the given clock ID.
+pub fn set_clock_rate(clock: ClockId, rate_hz: u32, skip_turbo: bool) -> Result<u32, MailboxError> {
+    #[repr(align(16))]
+    struct PropertyBuf([u32; 9]);
+    let mut buf = PropertyBuf([0; 9]);
+    let data = &mut buf.0;
+
+    data[0] = (data.len() * core::mem::size_of::<u32>()) as u32;
+    data[2] = tag::SET_CLOCK_RATE;
+    data[3] = 12;
+    data[4] = 12;
+    data[5] = clock.as_raw();
+    data[6] = rate_hz;
+    data[7] = if skip_turbo { 1 } else { 0 };
+
+    property_call(data)?;
+    Ok(data[6])
+}
+
+/// Enable/disable power for the given device.
+pub fn set_power_state(device: DeviceId, enable: bool, wait: bool) -> Result<u32, MailboxError> {
+    #[repr(align(16))]
+    struct PropertyBuf([u32; 9]);
+    let mut buf = PropertyBuf([0; 9]);
+    let data = &mut buf.0;
+
+    data[0] = (data.len() * core::mem::size_of::<u32>()) as u32;
+    data[2] = tag::SET_POWER_STATE;
+    data[3] = 8;
+    data[4] = 8;
+    data[5] = device.as_raw();
+    let mut state = if enable { power_state::ON } else { 0 };
+    if wait {
+        state |= power_state::WAIT;
+    }
+    data[6] = state;
+
+    property_call(data)?;
+    Ok(data[6])
+}
+
+fn mailbox_write(channel: u32, data: u32) -> Result<(), MailboxError> {
+    let value = (data & !0xF) | (channel & 0xF);
+    let mut last_status = 0;
+    for i in 0..MAILBOX_TIMEOUT {
+        let base = mailbox_base();
+        if base == 0 {
+            crate::print_str("MAILBOX: write called with mailbox_base==0\n");
+            return Err(MailboxError::ResponseError);
+        }
+
+        let status = unsafe { read_reg(mailbox_status_addr()) };
+        last_status = status;
+        if status & MAILBOX_STATUS_FULL == 0 {
+            unsafe {
+                write_reg(mailbox_write_addr(), value);
+            }
+            return Ok(());
+        }
+        // Avoid spamming logs: print a line every 100k iterations
+        if i % 100_000 == 0 {
+            crate::print_str("MAILBOX: waiting to write, STATUS=0x");
+            crate::print_hex(status as usize);
+            crate::print_str("\n");
+        }
+    }
+    crate::print_str("MAILBOX: write timeout, last STATUS=0x");
+    crate::print_hex(last_status as usize);
+    crate::print_str("\n");
+    Err(MailboxError::Timeout)
+}
+
+fn mailbox_read(channel: u32) -> Result<u32, MailboxError> {
+    let mut last_status = 0;
+    for i in 0..MAILBOX_TIMEOUT {
+        let base = mailbox_base();
+        if base == 0 {
+            crate::print_str("MAILBOX: read called with mailbox_base==0\n");
+            return Err(MailboxError::ResponseError);
+        }
+
+        let status = unsafe { read_reg(mailbox_status_addr()) };
+        last_status = status;
+        if status & MAILBOX_STATUS_EMPTY != 0 {
+            if i % 100_000 == 0 {
+                crate::print_str("MAILBOX: read waiting, STATUS=0x");
+                crate::print_hex(status as usize);
+                crate::print_str("\n");
+            }
+            continue;
+        }
+        let value = unsafe { read_reg(mailbox_read_addr()) };
+        if (value & 0xF) == (channel & 0xF) {
+            return Ok(value & !0xF);
+        }
+    }
+    crate::print_str("MAILBOX: read timeout, last STATUS=0x");
+    crate::print_hex(last_status as usize);
+    crate::print_str("\n");
+    Err(MailboxError::Timeout)
+}
+
+fn arm_to_vc(addr: usize) -> usize {
+    (addr & 0x3FFF_FFFF) | VC_BUS_ADDR_OFFSET
+}
+
+unsafe fn read_reg(addr: usize) -> u32 {
+    ptr::read_volatile(addr as *const u32)
+}
+
+unsafe fn write_reg(addr: usize, value: u32) {
+    ptr::write_volatile(addr as *mut u32, value);
+}
+
+/// Probe helper kept only for compatibility with existing call sites.
+/// もう「勝手に変なアドレスを推測して登録」はしない。
+pub fn probe_mailbox_candidates_once() {
+    crate::print_str("MAILBOX: probe (BAR0-based only)\n");
+    let bar0 = RP1_BAR0_CPU_BASE.load(Ordering::Acquire);
+    if bar0 == 0 {
+        crate::print_str("MAILBOX: BAR0 not programmed yet; mailbox base unknown\n");
+        return;
+    }
+
+    crate::print_str("MAILBOX: DIAG RP1_BAR0_CPU_BASE=");
+    crate::print_hex(bar0 as usize);
+    crate::print_str(" RP1_BAR1_CPU_BASE=");
+    crate::print_hex(RP1_BAR1_CPU_BASE.load(Ordering::SeqCst) as usize);
+    crate::print_str(" RP1_ETH_OFFSET=");
+    crate::print_hex(RP1_ETH_OFFSET);
+    crate::print_str(" computed_fallback=");
+    let fb = RP1_BAR1_CPU_BASE.load(Ordering::SeqCst) as usize + RP1_ETH_OFFSET + MAILBOX_REG_IN_ETH_BLOCK;
+    crate::print_hex(fb);
+    crate::print_str("\n");
+
+    crate::print_str("MAILBOX: probe did not register mailbox; call init_mailbox() or use property_call\n");
+}
+
+/// Initialize mailbox runtime registration explicitly. Call this from
+/// platform/pcie initialization when both CPU and bus addresses are known.
+pub fn init_mailbox(cpu_base: usize, bus_addr: usize) {
+    crate::print_str("MAILBOX: init(raw) cpu_base=");
+    crate::print_hex(cpu_base);
+    crate::print_str(" bus_addr=");
+    crate::print_hex(bus_addr);
+    crate::print_str("\n");
+
+    let cpu64 = cpu_base as u64;
+    if cpu64 == 0 {
+        crate::print_str("MAILBOX: ERROR - cpu_base == 0\n");
+        panic!("MAILBOX: init with cpu_base == 0");
+    }
+    if cpu64 < 0x0000_0000_6000_0000u64 || cpu64 > 0x0000_0000_60FF_FFFFu64 {
+        crate::print_str("MAILBOX: *** INVALID cpu_base (out of expected range)\n");
+        crate::print_str("MAILBOX: will panic to avoid silent hang\n");
+        panic!("MAILBOX: invalid cpu_base");
+    }
+
+    MAILBOX_CPU_BASE.store(cpu64, Ordering::SeqCst);
+    MAILBOX_BUS_ADDR.store(bus_addr as u32, Ordering::SeqCst);
+    MAILBOX_REGISTERED.store(true, Ordering::Release);
+
+    debug_dump_runtime_base();
+}
+
+/// Read the mailbox STATUS register (wrapper) and return its value.
+pub fn read_status() -> u32 {
+    let base = mailbox_base();
+    if base == 0 {
+        crate::print_str("MAILBOX: read_status called but mailbox not initialized\n");
+        return 0xFFFF_FFFF;
+    }
+    unsafe { read_reg(mailbox_status_addr()) }
+}
+
+/// Simple ping: read STATUS once and log it. Useful as a smoke test.
+pub fn ping_only_once() {
+    let st = read_status();
+    crate::print_str("MAILBOX: ping_only_once STATUS=0x");
+    crate::print_hex(st as usize);
+    crate::print_str("\n");
+}
+
+/// smoke test alias (keeps the simpler name used in templates)
+pub fn smoke_status() {
+    ping_only_once();
+}
+
+/// runtime から呼んで確認用のデバッグダンプ
+pub fn debug_dump_runtime_base() {
+    let cpu = MAILBOX_CPU_BASE.load(Ordering::SeqCst) as usize;
+    let bus = MAILBOX_BUS_ADDR.load(Ordering::SeqCst) as usize;
+
+    crate::print_str("MAILBOX: runtime cpu_base=");
+    crate::print_hex(cpu);
+    crate::print_str(" bus_addr=");
+    crate::print_hex(bus);
+    crate::print_str("\n");
+}

@@ -79,6 +79,35 @@ fn kernel_init() {
         drivers::uart::UART.puts("\n");
     } else {
         drivers::uart::UART.puts("PCIe initialized\n");
+
+        // Run minimal RP1 boot sequence to bring up mailbox/clock/reset
+        // This mirrors the small sequence Circle/Linux perform so that
+        // RP1 firmware becomes alive and mailbox registers stop returning 0xFFFFFFFF.
+        unsafe { crate::drivers::rp1_boot::rp1_boot_sequence(); }
+
+        // Step 1: probe mailbox candidates once, then ensure RP1 power/clock domains via firmware mailbox
+        // This helps locate the real mailbox address on boards with variant mappings.
+        crate::drivers::mailbox::probe_mailbox_candidates_once();
+
+        match crate::drivers::mailbox::set_power_state(
+            crate::drivers::mailbox::DeviceId::UsbHcd,
+            true,
+            true,
+        ) {
+            Ok(state) => {
+                drivers::uart::UART.puts("RP1 power state granted: 0x");
+                crate::print_hex(state as usize);
+                drivers::uart::UART.puts("\n");
+            }
+            Err(_) => {
+                drivers::uart::UART.puts("WARNING: RP1 power request failed\n");
+            }
+        }
+        if let Err(_) =
+            crate::drivers::mailbox::set_clock_state(crate::drivers::mailbox::ClockId::Core, true)
+        {
+            drivers::uart::UART.puts("WARNING: RP1 clock enable failed\n");
+        }
         
         // Find and enable RP1
         if let Some(pcie) = drivers::pcie::get_pcie() {
@@ -88,9 +117,10 @@ fn kernel_init() {
                     drivers::uart::UART.puts(e);
                     drivers::uart::UART.puts("\n");
                 } else {
+                    let _chip = rp1.read_chip_id();
                     // Initialize RP1 Ethernet
                     drivers::uart::UART.puts("Initializing RP1 Ethernet...\n");
-                    let rp1_base = rp1.get_bar1_base();
+                    let rp1_base = rp1.bar1_cpu_base();
                     let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
                     if let Err(e) = drivers::rp1_ethernet::init_rp1_ethernet(rp1_base, mac) {
                         drivers::uart::UART.puts("RP1 Ethernet init failed: ");
@@ -198,6 +228,16 @@ fn kernel_main_loop() -> ! {
                         let ts = drivers::timer::TIMER.get_ticks();
                         if let Some(stack) = network::get_network_stack() {
                             stack.poll(ts);
+                        }
+                        // Short-term debug: poll Ethernet driver directly to
+                        // detect whether DMA has received packets (bypass IRQ).
+                        if let Some(eth) = crate::drivers::rp1_ethernet::get_rp1_ethernet() {
+                            let mut dbg_buf = [0u8; 2048];
+                            if let Some(len) = eth.recv(&mut dbg_buf) {
+                                crate::print_str("[DBG ETH POLL] RX ");
+                                crate::print_dec(len);
+                                crate::print_str(" bytes\n");
+                            }
                         }
                         hotdeploy::poll_hotdeploy(ts);
                     }
