@@ -73,10 +73,18 @@ fn log_status(action: &str, dev: proto::Rp1DevId, status: u32) {
     crate::print_str("\n");
 }
 
+/// High-level helper used before Ethernet init to make sure RP1 GBE/PHY
+/// domains are powered and clocked.
+pub fn rp1_init_gbe() {
+    crate::print_str("[RP1] Powering up GBE + PHY via low-level regs\n");
+    rp1_enable_ethernet_lowlevel();
+    crate::print_str("[RP1] GBE + PHY ready\n");
+}
+
 // -----------------------------------------------------------------------
 // Low-level register definitions (direct RP1 control block access)
 // -----------------------------------------------------------------------
-pub const RP1_SYS_BASE: usize = 0x1000_0000;
+pub const RP1_SYS_BASE: usize = 0x60_0000_0000;
 pub const RP1_RST_CTRL: usize = RP1_SYS_BASE + 0x0000_1000;
 pub const RP1_CLK_CTRL: usize = RP1_SYS_BASE + 0x0000_2000;
 pub const RP1_PWR_CTRL: usize = RP1_SYS_BASE + 0x0000_3000;

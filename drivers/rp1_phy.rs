@@ -22,12 +22,9 @@ impl Rp1Phy {
     ///   BAR0 (RP1) + 0x10000 = MACB base
     ///   MACB base + 0x200   = MDIO block (NPHY/NDATA)
     pub fn new() -> Result<Self, PhyError> {
-        let bar0 = RP1_BAR0_CPU_BASE.load(Ordering::SeqCst) as usize;
-        if bar0 == 0 {
-            return Err(PhyError::Bar0NotProgrammed);
-        }
-        let macb_base = bar0 + 0x10000;
-        let mdio_base = macb_base + 0x200;
+        // MACB base is 0x60_0010_0000 (CPU view of RP1 BAR1 + 0x10_0000)
+        // MDIO offset is 0x200
+        let mdio_base = 0x60_0010_0200;
         Ok(Rp1Phy { mdio_base })
     }
 

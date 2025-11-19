@@ -1078,6 +1078,7 @@ static mut RP1_ETHERNET: Option<Rp1Ethernet> = None;
 
 pub fn init_rp1_ethernet(rp1_base: usize, mac: [u8; 6]) -> Result<(), &'static str> {
     unsafe {
+        crate::drivers::rp1_control::rp1_init_gbe();
         // Delegate low-level MAC/GBE init to the new rp1_gbe implementation
         // (minimal-intrusion approach). Then keep a Rp1Ethernet instance
         // around as the high-level API surface used by the rest of the kernel.
