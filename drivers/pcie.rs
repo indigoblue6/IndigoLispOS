@@ -1017,6 +1017,8 @@ impl<'a> Rp1Device<'a> {
             
             if cap_id == 0x05 { // MSI Capability
                 self.configure_msi(ptr, header);
+            } else if cap_id == 0x11 { // MSI-X Capability
+                self.parse_msix(ptr);
             }
             
             ptr = next_ptr;
@@ -1057,6 +1059,115 @@ impl<'a> Rp1Device<'a> {
         
         crate::print_str("PCIe: MSI Configured (Addr=0xC0000000, Data=1)\n");
     }
+
+    fn parse_msix(&mut self, offset: u8) {
+        crate::print_str("PCIe: Found MSI-X Capability @ 0x");
+        crate::print_hex(offset as usize);
+        crate::print_str("\n");
+        
+        // Read MSI-X Message Control (offset+2)
+        let header = self.controller.read_config(self.bus, self.dev, self.func, offset as u16);
+        let msg_ctrl = (header >> 16) as u16;
+        let table_size = (msg_ctrl & 0x7FF) + 1;  // bits [10:0]
+        let enabled = (msg_ctrl & 0x8000) != 0;     // bit 15
+        
+        crate::print_str("  Message Control: 0x");
+        crate::print_hex(msg_ctrl as usize);
+        crate::print_str("\n  Table Size: ");
+        crate::print_hex(table_size as usize);
+        crate::print_str(" entries\n  Enabled: ");
+        if enabled {
+            crate::print_str("YES\n");
+        } else {
+            crate::print_str("NO\n");
+        }
+        
+        // Read Table Offset/BIR (offset+4)
+        let table_offset_bir = self.controller.read_config(self.bus, self.dev, self.func, (offset + 4) as u16);
+        let table_bir = table_offset_bir & 0x7;  // bits [2:0]
+        let table_offset = table_offset_bir & !0x7;  // bits [31:3]
+        
+        crate::print_str("  Table BIR: ");
+        crate::print_hex(table_bir as usize);
+        crate::print_str(" (BAR");
+        crate::print_hex(table_bir as usize);
+        crate::print_str(")\n  Table Offset: 0x");
+        crate::print_hex(table_offset as usize);
+        crate::print_str("\n");
+        
+        // Read PBA Offset/BIR (offset+8)
+        let pba_offset_bir = self.controller.read_config(self.bus, self.dev, self.func, (offset + 8) as u16);
+        let pba_bir = pba_offset_bir & 0x7;
+        let pba_offset = pba_offset_bir & !0x7;
+        
+        crate::print_str("  PBA BIR: ");
+        crate::print_hex(pba_bir as usize);
+        crate::print_str(" (BAR");
+        crate::print_hex(pba_bir as usize);
+        crate::print_str(")\n  PBA Offset: 0x");
+        crate::print_hex(pba_offset as usize);
+        crate::print_str("\n");
+        
+        // Configure MSI-X Table Entry 0 for RP1 Mailbox (IRQ 229)
+        if table_bir == 0 {  // BAR0
+            crate::print_str("PCIe: Configuring MSI-X Entry 0 for IRQ 229...\n");
+            
+            // MSI-X Table is at BAR0 + table_offset
+            // Each entry is 16 bytes:
+            //   +0x00: Message Address Lower
+            //   +0x04: Message Address Upper
+            //   +0x08: Message Data
+            //   +0x0C: Vector Control
+            
+            let bar0_cpu = RP1_BAR0_CPU_BASE.load(Ordering::SeqCst);
+            let msix_table_base = bar0_cpu + table_offset as u64;
+            
+            crate::print_str("  MSI-X Table CPU addr: 0x");
+            crate::print_hex(msix_table_base as usize);
+            crate::print_str("\n");
+            
+            // GIC MSI address for BCM2712
+            let msi_addr_lower: u32 = 0xFEE00000;  // Standard MSI address
+            let msi_addr_upper: u32 = 0x0;
+            let msi_data: u32 = 229;  // IRQ number
+            let vector_control: u32 = 0;  // Unmask
+            
+            unsafe {
+                use core::ptr;
+                
+                // Write MSI-X Table Entry 0
+                ptr::write_volatile((msix_table_base + 0x00) as *mut u32, msi_addr_lower);
+                ptr::write_volatile((msix_table_base + 0x04) as *mut u32, msi_addr_upper);
+                ptr::write_volatile((msix_table_base + 0x08) as *mut u32, msi_data);
+                ptr::write_volatile((msix_table_base + 0x0C) as *mut u32, vector_control);
+                
+                crate::print_str("  Entry 0: Addr=0x");
+                crate::print_hex(msi_addr_lower as usize);
+                crate::print_str(" Data=");
+                crate::print_hex(msi_data as usize);
+                crate::print_str(" (IRQ 229)\n");
+            }
+            
+            // Enable MSI-X
+            let new_msg_ctrl = msg_ctrl | 0x8000;  // Set MSI-X Enable bit
+            let new_header = (header & 0xFFFF) | ((new_msg_ctrl as u32) << 16);
+            self.controller.write_config(self.bus, self.dev, self.func, offset as u16, new_header);
+            
+            crate::print_str("PCIe: MSI-X ENABLED\n");
+            
+            // Verify
+            let verify = self.controller.read_config(self.bus, self.dev, self.func, offset as u16);
+            let verify_ctrl = (verify >> 16) as u16;
+            if (verify_ctrl & 0x8000) != 0 {
+                crate::print_str("PCIe: MSI-X Enable bit confirmed SET\n");
+            } else {
+                crate::print_str("PCIe: WARNING - MSI-X Enable bit NOT set!\n");
+            }
+        } else {
+            crate::print_str("PCIe: MSI-X Table not in BAR0, skipping configuration\n");
+        }
+    }
+
 
     pub fn read_chip_id(&self) -> u32 {
         unsafe { ptr::read_volatile(self.sys_base() as *const u32) }

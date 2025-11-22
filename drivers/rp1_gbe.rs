@@ -18,13 +18,14 @@ pub const RP1_BAR0_BASE: usize = 0x60_0040_0000;
 pub const RP1_BAR1_BASE: usize = 0x60_0000_0000;
 
 // ============================================================================
-// Peripheral Bases (BAR0-relative)
+// Peripheral Bases (BAR1-relative for large peripherals, BAR0 for small ones)
+// BAR0 is only 16KB (0x4000), so GBE/CLK/ETH_CFG must be in BAR1
 // ============================================================================
-pub const RP1_GBE_BASE: usize     = RP1_BAR0_BASE + 0x0001_0000;
-pub const RP1_ETH_CFG: usize      = RP1_BAR0_BASE + 0x0001_4000;
-pub const RP1_GPIO_BASE: usize    = RP1_BAR0_BASE + 0x0000_D000;
-pub const RP1_SYS_BASE: usize     = RP1_BAR0_BASE;
-pub const RP1_CLK_BASE: usize     = RP1_BAR0_BASE + 0x0001_8000;
+pub const RP1_GBE_BASE: usize     = RP1_BAR1_BASE + 0x0010_0000;
+pub const RP1_ETH_CFG: usize      = RP1_BAR1_BASE + 0x0010_4000;
+pub const RP1_GPIO_BASE: usize    = RP1_BAR1_BASE + 0x000D_0000;
+pub const RP1_SYS_BASE: usize     = RP1_BAR0_BASE;  // SYS is in BAR0
+pub const RP1_CLK_BASE: usize     = RP1_BAR1_BASE + 0x0001_8000;
 
 // PHY address on RP1 board (from strap pin)
 const PHY_ADDR: u32 = 8;
@@ -155,7 +156,6 @@ unsafe fn write_eth_cfg(off: usize, val: u32) {
     ptr::write_volatile((RP1_ETH_CFG + off) as *mut u32, val);
 }
 
-// ============================================================================
 // MDIO: Wait for IDLE
 // ============================================================================
 const MDIO_WAIT_RETRIES: usize = 20_000;
@@ -173,6 +173,16 @@ unsafe fn macb_mdio_wait_idle() -> bool {
 // MDIO Read/Write via MAN
 // ============================================================================
 unsafe fn mdio_read(phy: u32, reg: u32) -> Option<u16> {
+    // Debug: Read NSR directly
+    let nsr_val = read_reg(NSR);
+    print_str("[MDIO] NSR=0x");
+    print_hex(nsr_val as usize);
+    print_str(" phy=");
+    print_hex(phy as usize);
+    print_str(" reg=");
+    print_hex(reg as usize);
+    print_str("\n");
+    
     if !macb_mdio_wait_idle() {
         print_str("[MDIO] timeout before read\n");
         return None;
@@ -229,24 +239,65 @@ unsafe fn enable_rp1_clocks() {
 
     const ETH_BIT: u32 = 1 << 16;
 
+    // Debug: Show base addresses
+    print_str("  RP1_SYS_BASE=0x");
+    print_hex(RP1_SYS_BASE);
+    print_str("\n  PWR@0x");
+    print_hex(PWR);
+    print_str("\n  CLK@0x");
+    print_hex(CLK);
+    print_str("\n  RST@0x");
+    print_hex(RST);
+    print_str("\n");
+
     // POWER
-    let mut p = ptr::read_volatile(PWR as *const u32);
+    let p_before = ptr::read_volatile(PWR as *const u32);
+    print_str("  PWR before: 0x");
+    print_hex(p_before as usize);
+    print_str("\n");
+    
+    let mut p = p_before;
     p |= ETH_BIT;
     ptr::write_volatile(PWR as *mut u32, p);
     crate::drivers::timer::TIMER.delay_ms(5);
+    
+    let p_after = ptr::read_volatile(PWR as *const u32);
+    print_str("  PWR after: 0x");
+    print_hex(p_after as usize);
+    print_str("\n");
 
     // CLOCK
-    let mut c = ptr::read_volatile(CLK as *const u32);
+    let c_before = ptr::read_volatile(CLK as *const u32);
+    print_str("  CLK before: 0x");
+    print_hex(c_before as usize);
+    print_str("\n");
+    
+    let mut c = c_before;
     c |= (1 << 6) | (1 << 7) | (1 << 8);
     c |= ETH_BIT;
     ptr::write_volatile(CLK as *mut u32, c);
     crate::drivers::timer::TIMER.delay_ms(5);
+    
+    let c_after = ptr::read_volatile(CLK as *const u32);
+    print_str("  CLK after: 0x");
+    print_hex(c_after as usize);
+    print_str("\n");
 
     // RESET deassert
-    let mut r = ptr::read_volatile(RST as *const u32);
+    let r_before = ptr::read_volatile(RST as *const u32);
+    print_str("  RST before: 0x");
+    print_hex(r_before as usize);
+    print_str("\n");
+    
+    let mut r = r_before;
     r &= !ETH_BIT;
     ptr::write_volatile(RST as *mut u32, r);
     crate::drivers::timer::TIMER.delay_ms(5);
+    
+    let r_after = ptr::read_volatile(RST as *const u32);
+    print_str("  RST after: 0x");
+    print_hex(r_after as usize);
+    print_str("\n");
 }
 
 // ============================================================================
@@ -541,19 +592,76 @@ unsafe fn debug_check_registers() {
     print_hex(RP1_GBE_BASE);
     print_str("\n");
 
-    let mid = read_reg(0x00FC);
-    print_str("  MID=0x");
-    print_hex(mid as usize);
+    // Try reading basic registers first
+    let ncr = read_reg(NCR);
+    print_str("  NCR=0x");
+    print_hex(ncr as usize);
     print_str("\n");
 
+    let ncfgr = read_reg(NCFGR);
+    print_str("  NCFGR=0x");
+    print_hex(ncfgr as usize);
+    print_str("\n");
+
+    let nsr = read_reg(NSR);
+    print_str("  NSR=0x");
+    print_hex(nsr as usize);
+    print_str("\n");
+
+    // Try multiple possible MID locations
+    let mid_fc = read_reg(0x00FC);
+    print_str("  MID@0xFC=0x");
+    print_hex(mid_fc as usize);
+    print_str("\n");
+
+    let mid_100 = read_reg(0x0100);
+    print_str("  REG@0x100=0x");
+    print_hex(mid_100 as usize);
+    print_str("\n");
+
+    let mid_104 = read_reg(0x0104);
+    print_str("  REG@0x104=0x");
+    print_hex(mid_104 as usize);
+    print_str("\n");
+
+    // Design Config registers (GEM-specific)
     let dcfg1 = read_reg(0x0280);
     let dcfg2 = read_reg(0x0284);
-    print_str("  DCFG1=0x");
+    let dcfg6 = read_reg(0x0294);
+    let dcfg7 = read_reg(0x0298);
+    
+    print_str("  DCFG1@0x280=0x");
     print_hex(dcfg1 as usize);
     print_str("\n");
-    print_str("  DCFG2=0x");
+    print_str("  DCFG2@0x284=0x");
     print_hex(dcfg2 as usize);
     print_str("\n");
+    print_str("  DCFG6@0x294=0x");
+    print_hex(dcfg6 as usize);
+    print_str("\n");
+    print_str("  DCFG7@0x298=0x");
+    print_hex(dcfg7 as usize);
+    print_str("\n");
+
+    // Dump first 16 registers (0x00-0x3C)
+    print_str("  First 16 regs:\n");
+    for i in 0..16 {
+        let val = read_reg(i * 4);
+        if val != 0 {
+            print_str("    [0x");
+            print_hex(i * 4);
+            print_str("]=0x");
+            print_hex(val as usize);
+            print_str("\n");
+        }
+    }
+
+    // If all registers are 0, MACB is not powered/clocked
+    if mid_fc == 0 && mid_100 == 0 && dcfg1 == 0 && dcfg2 == 0 && ncr == 0 {
+        print_str("  WARNING: All MACB registers are 0 - block not powered/clocked!\n");
+    } else if ncr != 0 {
+        print_str("  INFO: NCR is non-zero, MACB partially accessible\n");
+    }
 }
 
 // ============================================================================
