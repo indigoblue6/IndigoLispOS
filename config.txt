@@ -15,7 +15,7 @@ uart_baudrate=115200
 
 # RP1 chip configuration (Pi5 I/O chip)
 # Let firmware keep PCIe in reset so we can control PERST ourselves
-pciex4_reset=1
+# pciex4_reset=1
 
 # Memory settings
 gpu_mem=64

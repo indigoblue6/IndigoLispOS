@@ -1,7 +1,7 @@
 // interrupt.rs - Interrupt handling for IndigoLispOS
 // Provides IRQ handler called from assembly
 
-use crate::drivers::timer;
+
 
 // External assembly functions
 extern "C" {
@@ -25,12 +25,7 @@ pub fn init() {
 // IRQ handler called from assembly
 #[no_mangle]
 pub extern "C" fn irq_handler() {
-    // Handle timer interrupt
-    timer::handle_interrupt();
-    // Handle RP1 Ethernet IRQ (if any). This is a minimal dispatch:
-    // rp1_eth_irq_handler will check status and poll the network stack.
-    crate::drivers::rp1_ethernet::rp1_eth_irq_handler();
-    
-    // Call scheduler for task switching (if enabled in future)
-    // Currently scheduler is not integrated with IRQ
+    unsafe {
+        crate::drivers::gic::gic_handle_irq();
+    }
 }

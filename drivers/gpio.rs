@@ -44,7 +44,7 @@ impl Gpio {
             let mut val = ptr::read_volatile(reg_ptr);
             // clear current 3 bits
             val &= !(0b111 << bit_offset);
-            val |= ( (_function as u32) << bit_offset);
+            val |= (_function as u32) << bit_offset;
             ptr::write_volatile(reg_ptr, val);
         }
     }

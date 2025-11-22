@@ -2,8 +2,7 @@
 //
 // RP1 PHY bring-up helper (MDIO + auto-negotiation)
 
-use core::sync::atomic::Ordering;
-use crate::drivers::pcie::RP1_BAR0_CPU_BASE;
+
 
 #[derive(Debug)]
 pub enum PhyError {

@@ -1,6 +1,6 @@
 // ethernet.rs - Ethernet driver wrapper (now uses RP1 via PCIe)
 
-pub use crate::drivers::rp1_ethernet::get_rp1_ethernet as get_ethernet;
+
 
 #[derive(Clone, Copy)]
 pub struct MacAddress([u8; 6]);

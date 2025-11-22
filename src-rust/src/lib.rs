@@ -60,9 +60,33 @@ fn kernel_init() {
     // Initialize interrupt system
     drivers::uart::UART.puts("Initializing interrupts...\n");
     interrupt::init();
+    
+    unsafe {
+        drivers::uart::UART.puts("Initializing GIC...\n");
+        drivers::gic::gic_init();
+        
+        // Configure Timer IRQ (30)
+        drivers::uart::UART.puts("Configuring Timer IRQ...\n");
+        drivers::gic::register_irq_handler(drivers::gic::IRQ_LOCAL_TIMER, drivers::timer::handle_interrupt);
+        drivers::gic::gic_configure_irq(
+            drivers::gic::IRQ_LOCAL_TIMER,
+            0x40,  // priority
+            0x01,  // CPU0
+            false, // level triggered
+        );
+        
+        // Configure RP1 Mailbox IRQ (97)
+        drivers::gic::register_irq_handler(drivers::gic::IRQ_RP1_MBOX, drivers::mailbox_rp1::rp1_mbox_irq_handler);
+        drivers::gic::gic_configure_irq(drivers::gic::IRQ_RP1_MBOX, 0x20, 0x01, false);
+
+        // Configure RP1 Ethernet IRQ (98)
+        drivers::gic::register_irq_handler(drivers::gic::IRQ_RP1_GBE, drivers::rp1_ethernet::rp1_eth_irq_handler);
+        drivers::gic::gic_configure_irq(drivers::gic::IRQ_RP1_GBE, 0x20, 0x01, false);
+    }
+
     drivers::uart::UART.puts("Interrupts enabled\n");
     
-    // Initialize timer interrupt
+    // Initialize timer interrupt (hardware setup)
     drivers::uart::UART.puts("Initializing timer interrupt...\n");
     drivers::timer::TIMER.init_interrupt();
     drivers::uart::UART.puts("Timer interrupt ready\n");
@@ -85,30 +109,6 @@ fn kernel_init() {
         // RP1 firmware becomes alive and mailbox registers stop returning 0xFFFFFFFF.
         unsafe { crate::drivers::rp1_boot::rp1_boot_sequence(); }
 
-        // Step 1: probe mailbox candidates once, then ensure RP1 power/clock domains via firmware mailbox
-        // This helps locate the real mailbox address on boards with variant mappings.
-        crate::drivers::mailbox::probe_mailbox_candidates_once();
-
-        match crate::drivers::mailbox::set_power_state(
-            crate::drivers::mailbox::DeviceId::UsbHcd,
-            true,
-            true,
-        ) {
-            Ok(state) => {
-                drivers::uart::UART.puts("RP1 power state granted: 0x");
-                crate::print_hex(state as usize);
-                drivers::uart::UART.puts("\n");
-            }
-            Err(_) => {
-                drivers::uart::UART.puts("WARNING: RP1 power request failed\n");
-            }
-        }
-        if let Err(_) =
-            crate::drivers::mailbox::set_clock_state(crate::drivers::mailbox::ClockId::Core, true)
-        {
-            drivers::uart::UART.puts("WARNING: RP1 clock enable failed\n");
-        }
-        
         // Find and enable RP1
         if let Some(pcie) = drivers::pcie::get_pcie() {
             if let Some(mut rp1) = pcie.find_rp1() {
@@ -118,6 +118,18 @@ fn kernel_init() {
                     drivers::uart::UART.puts("\n");
                 } else {
                     let _chip = rp1.read_chip_id();
+                    
+                    // Now that RP1 mailbox is initialized, probe mailbox candidates
+                    crate::drivers::mailbox::probe_mailbox_candidates_once();
+                    
+                    // Enable RP1 Ethernet via RP1 firmware mailbox (NOT VC mailbox)
+                    // RP1 is not a VideoCore GPU, so we must use RP1 firmware mailbox
+                    unsafe {
+                        if !crate::drivers::rp1_boot::rp1_fw_init_ethernet() {
+                            drivers::uart::UART.puts("WARNING: RP1 Ethernet firmware init failed\n");
+                        }
+                    }
+                    
                     // Initialize RP1 Ethernet
                     drivers::uart::UART.puts("Initializing RP1 Ethernet...\n");
                     let rp1_base = rp1.bar1_cpu_base();

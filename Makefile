@@ -15,7 +15,7 @@ ARCH_DIR = arch/aarch64
 RUST_DIR = src-rust
 
 # Flags
-CFLAGS = -Wall -O2 -ffreestanding -nostdinc -nostdlib -nostartfiles
+CFLAGS = -Wall -O2 -ffreestanding -nostdinc -nostdlib -nostartfiles -mcmodel=large -fno-PIC
 LDFLAGS = -nostdlib
 
 # Hot deploy config (can be overridden)

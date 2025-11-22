@@ -2,76 +2,7 @@
 //
 // High-level helpers for powering / clocking / resetting RP1 peripherals.
 
-use crate::drivers::mailbox_vc::MailboxError;
 use core::ptr;
-use crate::drivers::rp1_mailbox_proto as proto;
-
-#[derive(Copy, Clone, Debug)]
-pub enum Rp1Device {
-    Usb,
-    Ethernet,
-    Wifi,
-}
-
-fn to_dev_id(dev: Rp1Device) -> proto::Rp1DevId {
-    match dev {
-        Rp1Device::Usb => proto::Rp1DevId::Usb,
-        Rp1Device::Ethernet => proto::Rp1DevId::Ethernet,
-        Rp1Device::Wifi => proto::Rp1DevId::Wifi,
-    }
-}
-
-pub fn rp1_power_on(dev: Rp1Device) -> Result<(), MailboxError> {
-    let id = to_dev_id(dev);
-    let status = proto::rp1_fw_power_control(id, proto::power_flags::ON)?;
-    log_status("power_on", id, status);
-    Ok(())
-}
-
-pub fn rp1_power_off(dev: Rp1Device) -> Result<(), MailboxError> {
-    let id = to_dev_id(dev);
-    let status = proto::rp1_fw_power_control(id, proto::power_flags::OFF)?;
-    log_status("power_off", id, status);
-    Ok(())
-}
-
-pub fn rp1_clock_enable(dev: Rp1Device) -> Result<(), MailboxError> {
-    let id = to_dev_id(dev);
-    let status = proto::rp1_fw_clock_control(id, proto::clock_flags::ENABLE, 0)?;
-    log_status("clock_enable", id, status);
-    Ok(())
-}
-
-pub fn rp1_clock_disable(dev: Rp1Device) -> Result<(), MailboxError> {
-    let id = to_dev_id(dev);
-    let status = proto::rp1_fw_clock_control(id, proto::clock_flags::DISABLE, 0)?;
-    log_status("clock_disable", id, status);
-    Ok(())
-}
-
-pub fn rp1_reset_deassert(dev: Rp1Device) -> Result<(), MailboxError> {
-    let id = to_dev_id(dev);
-    let status = proto::rp1_fw_reset_control(id, proto::reset_flags::DEASSERT)?;
-    log_status("reset_deassert", id, status);
-    Ok(())
-}
-
-pub fn rp1_reset_assert(dev: Rp1Device) -> Result<(), MailboxError> {
-    let id = to_dev_id(dev);
-    let status = proto::rp1_fw_reset_control(id, proto::reset_flags::ASSERT)?;
-    log_status("reset_assert", id, status);
-    Ok(())
-}
-
-fn log_status(action: &str, dev: proto::Rp1DevId, status: u32) {
-    crate::print_str("RP1 ");
-    crate::print_str(action);
-    crate::print_str(" dev=0x");
-    crate::print_hex(dev.as_raw() as usize);
-    crate::print_str(" status=0x");
-    crate::print_hex(status as usize);
-    crate::print_str("\n");
-}
 
 /// High-level helper used before Ethernet init to make sure RP1 GBE/PHY
 /// domains are powered and clocked.
@@ -107,16 +38,76 @@ unsafe fn r32(addr: usize) -> u32 {
 /// This mirrors Circle's bootloader sequence.
 pub fn rp1_enable_ethernet_lowlevel() {
     unsafe {
-        // Step 1: Power ON
-        let pwr = r32(RP1_PWR_CTRL);
-        w32(RP1_PWR_CTRL, pwr | RP1_PWR_ETH);
-
-        // Step 2: Clock enable
-        let clk = r32(RP1_CLK_CTRL);
-        w32(RP1_CLK_CTRL, clk | RP1_CLK_ETH);
-
-        // Step 3: Reset deassert
+        crate::print_str("[RP1] Step 1: Assert reset\n");
         let rst = r32(RP1_RST_CTRL);
-        w32(RP1_RST_CTRL, rst & !RP1_RST_ETH);
+        crate::print_str("  RST_CTRL before: 0x");
+        crate::print_hex(rst as usize);
+        crate::print_str("\n");
+        w32(RP1_RST_CTRL, rst | 0xFFFF); // Assert reset first
+        let rst_after = r32(RP1_RST_CTRL);
+        crate::print_str("  RST_CTRL after: 0x");
+        crate::print_hex(rst_after as usize);
+        crate::print_str("\n");
+
+        crate::print_str("[RP1] Step 2: Power ON\n");
+        let pwr = r32(RP1_PWR_CTRL);
+        crate::print_str("  PWR_CTRL before: 0x");
+        crate::print_hex(pwr as usize);
+        crate::print_str("\n");
+        w32(RP1_PWR_CTRL, pwr | 0xFFFF);
+        let pwr_after = r32(RP1_PWR_CTRL);
+        crate::print_str("  PWR_CTRL after: 0x");
+        crate::print_hex(pwr_after as usize);
+        crate::print_str("\n");
+
+        crate::print_str("[RP1] Step 3: Clock enable\n");
+        let clk = r32(RP1_CLK_CTRL);
+        crate::print_str("  CLK_CTRL before: 0x");
+        crate::print_hex(clk as usize);
+        crate::print_str("\n");
+        w32(RP1_CLK_CTRL, clk | 0xFFFF);
+        let clk_after = r32(RP1_CLK_CTRL);
+        crate::print_str("  CLK_CTRL after: 0x");
+        crate::print_hex(clk_after as usize);
+        crate::print_str("\n");
+
+        crate::print_str("[RP1] Step 4: Initialize CLKGEN (Brute-force enable)\n");
+        // Initialize CLKGEN registers. Try to enable everything in the range.
+        const CLKGEN_BASE: usize = RP1_SYS_BASE + 0x18000;
+        
+        // Try enabling clocks in range 0x18000 - 0x18200
+        // Heuristic:
+        // If addr % 8 == 0, assume CTRL -> write 0xB00 (Enable | Side | Src)
+        // If addr % 8 == 4, assume DIV -> write 0x100 (Div=1.0 approx)
+        for i in 0..128 { 
+            let addr = CLKGEN_BASE + (i * 4);
+            if (addr & 4) == 0 {
+                // Offset 0, 8, 16... -> CTRL
+                w32(addr, 0x100 | 0x200 | 0x800); 
+            } else {
+                // Offset 4, 12, 20... -> DIV
+                w32(addr, 0x100); 
+            }
+        }
+        
+        crate::print_str("  CLKGEN[0x18000]: 0x");
+        crate::print_hex(r32(CLKGEN_BASE) as usize);
+        crate::print_str("\n");
+
+        crate::print_str("[RP1] Step 5: Deassert reset\n");
+        let rst2 = r32(RP1_RST_CTRL);
+        crate::print_str("  RST_CTRL before: 0x");
+        crate::print_hex(rst2 as usize);
+        crate::print_str("\n");
+        w32(RP1_RST_CTRL, rst2 & !0xFFFF);
+        let rst2_after = r32(RP1_RST_CTRL);
+        crate::print_str("  RST_CTRL after: 0x");
+        crate::print_hex(rst2_after as usize);
+        crate::print_str("\n");
+
+        // Small delay to let things stabilize
+        for _ in 0..100000 {
+            core::hint::spin_loop();
+        }
     }
 }

@@ -638,7 +638,7 @@ impl Rp1Ethernet {
 
         crate::print_str("RP1: enabling Ethernet domain via RP1 mailbox\n");
         unsafe {
-            if !crate::drivers::rp1_boot::rp1_enable_ethernet() {
+            if !crate::drivers::rp1_boot::rp1_fw_init_ethernet() {
                 crate::print_str("RP1: rp1_enable_ethernet() reported failure\n");
             }
         }
@@ -1084,7 +1084,7 @@ pub fn init_rp1_ethernet(rp1_base: usize, mac: [u8; 6]) -> Result<(), &'static s
         // around as the high-level API surface used by the rest of the kernel.
         crate::drivers::rp1_gbe::gbe_init(mac);
 
-        let mut eth = Rp1Ethernet::new(rp1_base);
+        let eth = Rp1Ethernet::new(rp1_base);
         // We do not call eth.init() here because the low-level initialization
         // is handled by rp1_gbe; Rp1Ethernet methods `send`/`recv` are
         // adjusted to delegate to `rp1_gbe` when available.
@@ -1100,7 +1100,7 @@ pub fn get_rp1_ethernet() -> Option<&'static mut Rp1Ethernet> {
 /// Minimal IRQ handler invoked from the central IRQ entry.
 /// This checks ETH_CFG interrupt status, clears it, and triggers
 /// a network stack poll so smoltcp will consume received frames.
-pub fn rp1_eth_irq_handler() {
+pub fn rp1_eth_irq_handler(_intid: u32) {
     crate::print_str("RP1 Ethernet: rp1_eth_irq_handler invoked\n");
     if let Some(eth) = get_rp1_ethernet() {
         let status = eth.get_eth_cfg_interrupt_status();

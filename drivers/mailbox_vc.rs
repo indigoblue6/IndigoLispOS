@@ -152,7 +152,7 @@ fn vc_mbox_read(channel: u32) -> Result<u32, MailboxError> {
 
 // Dump raw VC mailbox registers for debugging
 fn dump_raw_vc_regs() {
-    let base = VC_MAILBOX_BASE as *const u32;
+    let _base = VC_MAILBOX_BASE as *const u32;
     let status_addr = (VC_MAILBOX_BASE + 0x18) as *const u32;
     let write_addr = (VC_MAILBOX_BASE + 0x20) as *const u32;
     let read_addr = VC_MAILBOX_BASE as *const u32;
@@ -204,11 +204,15 @@ pub fn property_call(buffer: &mut [u32]) -> Result<(), MailboxError> {
     let bus_addr = arm_to_vc(addr);
 
     // Quick availability check: Pi 5 では VC mailbox が ARM から利用できないため、
-    // 既知のゴミ値 (0xFFFF_FFFF / 0x74696D65) が返ったら NoDevice 扱いにする。
+    // 既知のゴミ値 (0xFFFF_FFFF) が返ったら NoDevice 扱いにする。
+    // 0x7469_6D65 ("time") は Stub からの応答の可能性があるため、警告しつつ続行する。
     let raw_status = unsafe { ptr::read_volatile(vc_mbox_status_addr() as *const u32) };
-    if raw_status == 0xFFFF_FFFF || raw_status == 0x7469_6D65 {
-        crate::print_str("MAILBOX (VC): not present on this platform, skipping property_call\n");
+    if raw_status == 0xFFFF_FFFF {
+        crate::print_str("MAILBOX (VC): not present on this platform (0xFFFFFFFF), skipping property_call\n");
         return Err(MailboxError::NoDevice);
+    }
+    if raw_status == 0x7469_6D65 {
+        crate::print_str("MAILBOX (VC): status is 'time' (0x74696D65), attempting to proceed...\n");
     }
 
     // VC property mailbox にバスアドレスを書き込む

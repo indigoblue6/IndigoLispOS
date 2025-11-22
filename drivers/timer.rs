@@ -85,7 +85,7 @@ impl Timer {
 pub static TIMER: Timer = Timer;
 
 // Handle timer interrupt
-pub fn handle_interrupt() {
+pub fn handle_interrupt(_intid: u32) {
     // Increment tick counter
     TICK_COUNT.fetch_add(1, Ordering::SeqCst);
     
